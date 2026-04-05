@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+import psycopg2
+import psycopg2.extras
+from psycopg2 import pool
 
 # ==================== ВЕБ-СЕРВЕР ====================
 flask_app = Flask(__name__)
@@ -38,61 +41,159 @@ REVIEWS_LINK = "https://t.me/otz_themissedpast"
 ALLOWED_GROUPS = {ADMIN_GROUP_ID, SUPPORT_GROUP_ID, ADMIN_APPLICATION_GROUP_ID}
 OWNER_ID = 8098729751
 
-# ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
+# ==================== ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ====================
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL не задан в переменных окружения")
+
+# Создаём пул соединений
+db_pool = pool.SimpleConnectionPool(1, 10, DATABASE_URL, sslmode='require')
+
+def get_db_connection():
+    return db_pool.getconn()
+
+def release_db_connection(conn):
+    db_pool.putconn(conn)
+
+def init_db():
+    """Создаёт таблицы, если их нет"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Таблица пользователей
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    first_name TEXT,
+                    username TEXT,
+                    registered_at TIMESTAMP,
+                    name TEXT,
+                    age TEXT,
+                    gender TEXT,
+                    type TEXT
+                )
+            """)
+            # Таблица банов
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bans (
+                    user_id BIGINT PRIMARY KEY,
+                    until_date TIMESTAMP
+                )
+            """)
+            # Таблица мутов
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS mutes (
+                    user_id BIGINT PRIMARY KEY,
+                    until_date TIMESTAMP
+                )
+            """)
+            conn.commit()
+    finally:
+        release_db_connection(conn)
+
+# ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (КЭШ) ====================
 waiting_for_forward = set()
 waiting_for_support = set()
 forwarded = {}
 support_forwarded = {}
 admin_replies = {}
 support_admin_replies = {}
-banned_users = set()
-muted_users = set()
-user_profiles = {}
 profile_sent = set()
 broadcast_data = {}
 user_has_message = set()
-ban_until = {}
-mute_until = {}
 group_warnings = {}
 application_messages = {}
 
-# ==================== БАЗА ДАННЫХ ====================
-try:
-    from replit import db
-    print("Replit Database подключена")
-except ImportError:
-    db = {}
-    print("Локальная база")
-
+# ==================== РАБОТА С БАЗОЙ ====================
 def load_db():
-    global user_profiles, banned_users, muted_users, ban_until, mute_until
+    """Загружает данные из БД в глобальные переменные-кэши"""
+    global banned_users, muted_users, ban_until, mute_until, user_profiles
+    conn = get_db_connection()
     try:
-        data = db.get("users_data", {}) if hasattr(db, 'get') else db.get("users_data", {})
-        user_profiles = {int(k): v for k, v in data.get('profiles', {}).items()}
-        for uid_str, until_str in data.get('banned', {}).items():
-            uid, until = int(uid_str), datetime.fromisoformat(until_str)
-            if until > datetime.now():
-                banned_users.add(uid)
-                ban_until[uid] = until
-        for uid_str, until_str in data.get('muted', {}).items():
-            uid, until = int(uid_str), datetime.fromisoformat(until_str)
-            if until > datetime.now():
-                muted_users.add(uid)
-                mute_until[uid] = until
-        print(f"Загружено {len(user_profiles)} пользователей")
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # Загружаем пользователей
+            cur.execute("SELECT * FROM users")
+            user_profiles = {}
+            for row in cur:
+                user_profiles[row['user_id']] = {
+                    'first_name': row['first_name'],
+                    'username': row['username'],
+                    'registered_at': row['registered_at'].isoformat() if row['registered_at'] else None,
+                    'name': row['name'],
+                    'age': row['age'],
+                    'gender': row['gender'],
+                    'type': row['type']
+                }
+
+            # Загружаем баны
+            cur.execute("SELECT user_id, until_date FROM bans")
+            banned_users = set()
+            ban_until = {}
+            for row in cur:
+                uid = row['user_id']
+                until = row['until_date']
+                if until > datetime.now():
+                    banned_users.add(uid)
+                    ban_until[uid] = until
+
+            # Загружаем муты
+            cur.execute("SELECT user_id, until_date FROM mutes")
+            muted_users = set()
+            mute_until = {}
+            for row in cur:
+                uid = row['user_id']
+                until = row['until_date']
+                if until > datetime.now():
+                    muted_users.add(uid)
+                    mute_until[uid] = until
+
+        print(f"Загружено {len(user_profiles)} пользователей, {len(banned_users)} банов, {len(muted_users)} мутов")
     except Exception as e:
         print(f"Ошибка загрузки: {e}")
+    finally:
+        release_db_connection(conn)
 
 def save_db():
+    """Сохраняет изменения в БД (вызывается после каждого изменения)"""
+    conn = get_db_connection()
     try:
-        data = {
-            'profiles': {str(k): v for k, v in user_profiles.items()},
-            'banned': {str(uid): until.isoformat() for uid, until in ban_until.items() if until > datetime.now()},
-            'muted': {str(uid): until.isoformat() for uid, until in mute_until.items() if until > datetime.now()}
-        }
-        db["users_data"] = data
+        with conn.cursor() as cur:
+            # Синхронизация пользователей
+            for uid, data in user_profiles.items():
+                cur.execute("""
+                    INSERT INTO users (user_id, first_name, username, registered_at, name, age, gender, type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        first_name = EXCLUDED.first_name,
+                        username = EXCLUDED.username,
+                        registered_at = EXCLUDED.registered_at,
+                        name = EXCLUDED.name,
+                        age = EXCLUDED.age,
+                        gender = EXCLUDED.gender,
+                        type = EXCLUDED.type
+                """, (
+                    uid, data.get('first_name'), data.get('username'),
+                    datetime.fromisoformat(data['registered_at']) if data.get('registered_at') else None,
+                    data.get('name'), data.get('age'), data.get('gender'), data.get('type')
+                ))
+
+            # Синхронизация банов
+            cur.execute("DELETE FROM bans")
+            for uid, until in ban_until.items():
+                if until > datetime.now():
+                    cur.execute("INSERT INTO bans (user_id, until_date) VALUES (%s, %s)", (uid, until))
+
+            # Синхронизация мутов
+            cur.execute("DELETE FROM mutes")
+            for uid, until in mute_until.items():
+                if until > datetime.now():
+                    cur.execute("INSERT INTO mutes (user_id, until_date) VALUES (%s, %s)", (uid, until))
+
+            conn.commit()
     except Exception as e:
         print(f"Ошибка сохранения: {e}")
+    finally:
+        release_db_connection(conn)
 
 def update_user_info(user_id, first_name, username):
     if user_id in user_profiles:
@@ -119,13 +220,16 @@ def update_profile(user_id, name, age, gender, p_type):
         user_profiles[user_id].update({"name": name, "age": age, "gender": gender, "type": p_type})
         save_db()
 
-def get_user_name(user_id):
-    p = user_profiles.get(user_id, {})
-    return p.get('first_name') or f"ID:{user_id}"
-
 def remove_blocked_user(user_id):
     if user_id in user_profiles:
         del user_profiles[user_id]
+        # Удаляем также из банов и мутов, если были
+        if user_id in banned_users:
+            banned_users.discard(user_id)
+            ban_until.pop(user_id, None)
+        if user_id in muted_users:
+            muted_users.discard(user_id)
+            mute_until.pop(user_id, None)
         save_db()
         waiting_for_forward.discard(user_id)
         waiting_for_support.discard(user_id)
@@ -133,6 +237,10 @@ def remove_blocked_user(user_id):
         user_has_message.discard(user_id)
         return True
     return False
+
+def get_user_name(user_id):
+    p = user_profiles.get(user_id, {})
+    return p.get('first_name') or f"ID:{user_id}"
 
 def get_gender_emoji(gender):
     if gender == 'male':
@@ -296,6 +404,7 @@ async def start_admin_application(update, context):
     ]
     await message.reply_text(
         "Вы начали заполнение анкеты для вступления в администрацию.\n"
+        "⚠️ **Отвечайте только текстовыми сообщениями** (не отправляйте фото, видео, стикеры и т.д.)\n\n"
         "Сначала выберите ваш тип деятельности:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
@@ -329,31 +438,61 @@ async def finish_application(update, context):
     first_name = user.first_name
     username = user.username or "нет"
 
-    text = f"📝 **Новая анкета кандидата**\n\n"
-    text += f"👤 Пользователь: {first_name} (@{username})\n"
-    text += f"🆔 ID: `{user_id}`\n"
-    text += f"🏷️ Тип деятельности: {app_data['type']}\n\n"
-    text += "**Ответы:**\n"
+    header = f"📝 Новая анкета кандидата\n\n"
+    header += f"👤 Пользователь: {first_name} (@{username})\n"
+    header += f"🆔 ID: {user_id}\n"
+    header += f"🏷️ Тип деятельности: {app_data['type']}\n\n"
+    header += "Ответы:\n"
+
+    body = ""
     for i, q in enumerate(app_data['questions'], 1):
         answer = app_data['answers'][i-1] if i-1 < len(app_data['answers']) else "❌ нет ответа"
-        if len(answer) > 300:
-            answer = answer[:300] + "..."
-        text += f"*{q}*\n{answer}\n\n"
-    text += f"📅 Отправлено: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        body += f"\n{q}\n{answer}\n\n"
 
+    footer = f"\n📅 Отправлено: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    full_text = header + body + footer
+
+    max_len = 4000  # безопасный лимит для Telegram
+    if len(full_text) <= max_len:
+        parts = [full_text]
+    else:
+        parts = []
+        current_part = header
+        for i, q in enumerate(app_data['questions'], 1):
+            answer = app_data['answers'][i-1] if i-1 < len(app_data['answers']) else "❌ нет ответа"
+            qa = f"\n{q}\n{answer}\n\n"
+            if len(current_part) + len(qa) + len(footer) > max_len:
+                parts.append(current_part + footer)
+                current_part = header + f"*(продолжение)*\n"
+            current_part += qa
+        parts.append(current_part + footer)
+
+    global application_messages
     try:
-        sent = await context.bot.send_message(
-            chat_id=ADMIN_APPLICATION_GROUP_ID,
-            text=text,
-            parse_mode="Markdown"
-        )
-        global application_messages
-        application_messages[sent.message_id] = user_id
+        for idx, part in enumerate(parts):
+            sent = await context.bot.send_message(
+                chat_id=ADMIN_APPLICATION_GROUP_ID,
+                text=part,
+                parse_mode=None
+            )
+            if idx == 0:
+                application_messages[sent.message_id] = user_id
     except Exception as e:
         print(f"Ошибка отправки анкеты в группу: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при отправке анкеты. Пожалуйста, обратитесь в тех поддержку, и попробуйте позже.")
-        del context.user_data['admin_application']
-        return
+        try:
+            import io
+            file = io.BytesIO(full_text.encode('utf-8'))
+            file.name = f"application_{user_id}.txt"
+            sent = await context.bot.send_document(
+                chat_id=ADMIN_APPLICATION_GROUP_ID,
+                document=file,
+                caption=f"📝 Анкета кандидата {first_name} (@{username})"
+            )
+            application_messages[sent.message_id] = user_id
+        except Exception as e2:
+            await update.message.reply_text("❌ Критическая ошибка при отправке анкеты. Попробуйте позже или обратитесь в техподдержку.")
+            del context.user_data['admin_application']
+            return
 
     await update.message.reply_text(
         "✅ Анкета отправлена на проверку. Ожидайте ответа администратора.\n"
@@ -518,6 +657,12 @@ async def settings(update, context):
 
 async def stop(update, context):
     uid = update.message.chat_id
+    # Отмена анкеты администрации, если она активна
+    if context.user_data.get('admin_application'):
+        del context.user_data['admin_application']
+        await update.message.reply_text("❌ Заполнение анкеты администратора отменено.")
+        return
+
     in_forward = uid in waiting_for_forward
     in_support = uid in waiting_for_support
     if not in_forward and not in_support:
@@ -695,6 +840,27 @@ async def info_command(update, context):
         parse_mode="Markdown",
         reply_markup=info_buttons(uid, is_owner)
     )
+
+async def export_db(update, context):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ У вас нет прав на эту команду")
+        return
+    import io
+    content = "ID,First Name,Username,Registered At,Name,Age,Gender,Type,Banned,Muted\n"
+    for uid, data in user_profiles.items():
+        banned = "Yes" if uid in banned_users else "No"
+        muted = "Yes" if uid in muted_users else "No"
+        line = f"{uid},{data.get('first_name','')},{data.get('username','')},{data.get('registered_at','')},{data.get('name','')},{data.get('age','')},{data.get('gender','')},{data.get('type','')},{banned},{muted}\n"
+        content += line
+    content += "\n# Ban details (ID,until):\n"
+    for uid, until in ban_until.items():
+        content += f"{uid},{until.isoformat()}\n"
+    content += "\n# Mute details (ID,until):\n"
+    for uid, until in mute_until.items():
+        content += f"{uid},{until.isoformat()}\n"
+    file = io.BytesIO(content.encode('utf-8'))
+    file.name = "users_export.csv"
+    await update.message.reply_document(document=file, filename="users_export.csv", caption="📁 Экспорт базы пользователей")
 
 # ==================== КОМАНДЫ ДЛЯ ВЛАДЕЛЬЦА ====================
 async def stats(update, context):
@@ -1509,8 +1675,11 @@ async def button_handler(update, context):
     elif data in ("mi", "admins"):
         text = "ℹ️ В разработке" if data == "mi" else "👑 Напишите пожалуйста в бот: @anker_reachedtheend_bot"
         await safe_send(text, reply_markup=back_button())
+
 # ==================== ЗАПУСК ====================
 def run():
+    # Инициализируем базу данных
+    init_db()
     load_db()
     app = Application.builder().token(TOKEN).build()
 
@@ -1530,6 +1699,7 @@ def run():
     app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("export_db", export_db, filters=filters.ChatType.PRIVATE))
 
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
