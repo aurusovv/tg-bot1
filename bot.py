@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.error import TelegramError, Forbidden, BadRequest
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
@@ -60,7 +61,6 @@ def init_db():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            # Таблица пользователей
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -73,14 +73,12 @@ def init_db():
                     type TEXT
                 )
             """)
-            # Таблица банов
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bans (
                     user_id BIGINT PRIMARY KEY,
                     until_date TIMESTAMP
                 )
             """)
-            # Таблица мутов
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS mutes (
                     user_id BIGINT PRIMARY KEY,
@@ -103,15 +101,18 @@ broadcast_data = {}
 user_has_message = set()
 group_warnings = {}
 application_messages = {}
+banned_users = set()
+muted_users = set()
+ban_until = {}
+mute_until = {}
+user_profiles = {}
 
 # ==================== РАБОТА С БАЗОЙ ====================
 def load_db():
-    """Загружает данные из БД в глобальные переменные-кэши"""
     global banned_users, muted_users, ban_until, mute_until, user_profiles
     conn = get_db_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # Загружаем пользователей
             cur.execute("SELECT * FROM users")
             user_profiles = {}
             for row in cur:
@@ -125,7 +126,6 @@ def load_db():
                     'type': row['type']
                 }
 
-            # Загружаем баны
             cur.execute("SELECT user_id, until_date FROM bans")
             banned_users = set()
             ban_until = {}
@@ -136,7 +136,6 @@ def load_db():
                     banned_users.add(uid)
                     ban_until[uid] = until
 
-            # Загружаем муты
             cur.execute("SELECT user_id, until_date FROM mutes")
             muted_users = set()
             mute_until = {}
@@ -154,11 +153,9 @@ def load_db():
         release_db_connection(conn)
 
 def save_db():
-    """Сохраняет изменения в БД (вызывается после каждого изменения)"""
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            # Синхронизация пользователей
             for uid, data in user_profiles.items():
                 cur.execute("""
                     INSERT INTO users (user_id, first_name, username, registered_at, name, age, gender, type)
@@ -177,13 +174,11 @@ def save_db():
                     data.get('name'), data.get('age'), data.get('gender'), data.get('type')
                 ))
 
-            # Синхронизация банов
             cur.execute("DELETE FROM bans")
             for uid, until in ban_until.items():
                 if until > datetime.now():
                     cur.execute("INSERT INTO bans (user_id, until_date) VALUES (%s, %s)", (uid, until))
 
-            # Синхронизация мутов
             cur.execute("DELETE FROM mutes")
             for uid, until in mute_until.items():
                 if until > datetime.now():
@@ -223,7 +218,6 @@ def update_profile(user_id, name, age, gender, p_type):
 def remove_blocked_user(user_id):
     if user_id in user_profiles:
         del user_profiles[user_id]
-        # Удаляем также из банов и мутов, если были
         if user_id in banned_users:
             banned_users.discard(user_id)
             ban_until.pop(user_id, None)
@@ -452,7 +446,7 @@ async def finish_application(update, context):
     footer = f"\n📅 Отправлено: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     full_text = header + body + footer
 
-    max_len = 4000  # безопасный лимит для Telegram
+    max_len = 4000
     if len(full_text) <= max_len:
         parts = [full_text]
     else:
@@ -657,7 +651,6 @@ async def settings(update, context):
 
 async def stop(update, context):
     uid = update.message.chat_id
-    # Отмена анкеты администрации, если она активна
     if context.user_data.get('admin_application'):
         del context.user_data['admin_application']
         await update.message.reply_text("❌ Заполнение анкеты администратора отменено.")
@@ -841,27 +834,6 @@ async def info_command(update, context):
         reply_markup=info_buttons(uid, is_owner)
     )
 
-async def export_db(update, context):
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ У вас нет прав на эту команду")
-        return
-    import io
-    content = "ID,First Name,Username,Registered At,Name,Age,Gender,Type,Banned,Muted\n"
-    for uid, data in user_profiles.items():
-        banned = "Yes" if uid in banned_users else "No"
-        muted = "Yes" if uid in muted_users else "No"
-        line = f"{uid},{data.get('first_name','')},{data.get('username','')},{data.get('registered_at','')},{data.get('name','')},{data.get('age','')},{data.get('gender','')},{data.get('type','')},{banned},{muted}\n"
-        content += line
-    content += "\n# Ban details (ID,until):\n"
-    for uid, until in ban_until.items():
-        content += f"{uid},{until.isoformat()}\n"
-    content += "\n# Mute details (ID,until):\n"
-    for uid, until in mute_until.items():
-        content += f"{uid},{until.isoformat()}\n"
-    file = io.BytesIO(content.encode('utf-8'))
-    file.name = "users_export.csv"
-    await update.message.reply_document(document=file, filename="users_export.csv", caption="📁 Экспорт базы пользователей")
-
 # ==================== КОМАНДЫ ДЛЯ ВЛАДЕЛЬЦА ====================
 async def stats(update, context):
     if update.effective_user.id != OWNER_ID:
@@ -1037,7 +1009,7 @@ async def show_user_full_info(update, context, target_id):
 async def send_list_page(chat_id, message_id, page, context):
     users_per_page = 2
     users_list = list(user_profiles.items())
-    total_pages = (len(users_list) + users_per_page - 1) // users_per_page
+    total_pages = max(1, (len(users_list) + users_per_page - 1) // users_per_page)
     if page < 1 or page > total_pages:
         page = 1
     start = (page - 1) * users_per_page
@@ -1060,21 +1032,28 @@ async def send_list_page(chat_id, message_id, page, context):
     if page < total_pages:
         keyboard.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"list_page_{page+1}"))
     reply_markup = InlineKeyboardMarkup([keyboard]) if keyboard else None
-    try:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-    except Exception:
+
+    if message_id is None:
+        # Первое сообщение – отправляем новое
         await context.bot.send_message(
             chat_id=chat_id,
             text=text,
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
+    else:
+        # Пагинация – редактируем существующее
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            # Если редактирование не удалось (например, сообщение удалено), просто логируем
+            print(f"Не удалось отредактировать сообщение {message_id}: {e}")
 
 # ==================== АНКЕТА ДЛЯ ПОЛЬЗОВАТЕЛЯ ====================
 async def save_profile(update, context):
@@ -1150,7 +1129,6 @@ async def forward_msg(update, context):
         return
     uid = update.message.chat_id
 
-    # Анкета для админов
     if context.user_data.get('admin_application') and context.user_data['admin_application'].get('questions'):
         await process_application_answer(update, context)
         return
@@ -1164,13 +1142,11 @@ async def forward_msg(update, context):
         )
         return
 
-    # Рассылка
     if context.user_data.get('awaiting_broadcast'):
         context.user_data['awaiting_broadcast'] = False
         await save_broadcast_data(update, context, uid)
         return
 
-    # Отправка сообщения пользователю от владельца
     if context.user_data.get('send_to_user'):
         target_id = context.user_data.pop('send_to_user')
         msg = update.message
@@ -1185,7 +1161,6 @@ async def forward_msg(update, context):
             await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
         return
 
-    # Редактирование профиля (из кнопок)
     if context.user_data.get('edit_target') and context.user_data.get('edit_field'):
         target_id = context.user_data['edit_target']
         field = context.user_data['edit_field']
@@ -1224,7 +1199,6 @@ async def forward_msg(update, context):
             del context.user_data['edit_from_info']
         return
 
-    # Редактирование собственного профиля (через настройки)
     if context.user_data.get('edit'):
         field = context.user_data['edit']
         if field == 'name':
@@ -1244,12 +1218,10 @@ async def forward_msg(update, context):
         del context.user_data['edit']
         return
 
-    # Заполнение обычной анкеты
     if context.user_data.get('awaiting'):
         await save_profile(update, context)
         return
 
-    # Режим общения
     if uid in waiting_for_forward:
         if is_banned(uid) or is_muted(uid):
             if is_banned(uid):
@@ -1322,7 +1294,6 @@ async def reply_to(update, context):
         return
     cid, rid = msg.chat.id, msg.reply_to_message.message_id
 
-    # Ответ на анкету
     if cid == ADMIN_APPLICATION_GROUP_ID:
         user_id = application_messages.get(rid)
         if user_id:
@@ -1337,7 +1308,6 @@ async def reply_to(update, context):
                 await msg.reply_text(f"❌ Ошибка при отправке пользователю: {str(e)[:100]}")
             return
 
-    # Обычное общение
     if cid == ADMIN_GROUP_ID and rid in forwarded:
         fwd, rep = forwarded, admin_replies
     elif cid == SUPPORT_GROUP_ID and rid in support_forwarded:
@@ -1352,11 +1322,13 @@ async def reply_to(update, context):
             rep[msg.message_id] = (uid, sent.message_id)
         except Exception as e:
             error_msg = str(e).lower()
-            if "blocked" in error_msg or "deactivated" in error_msg or "chat not found" in error_msg:
+            if isinstance(e, Forbidden) or "blocked" in error_msg or "deactivated" in error_msg or "chat not found" in error_msg:
                 await msg.reply_text(f"⚠️ {get_user_name(uid)} заблокировал бота. Пользователь удален из базы.")
                 remove_blocked_user(uid)
             else:
-                await msg.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+                # Не выводим ошибку в чат для закреплений и других неважных действий
+                if "not enough rights" not in error_msg and "message is not modified" not in error_msg:
+                    await msg.reply_text(f"❌ Ошибка: {str(e)[:100]}")
     elif msg.edit_date and msg.message_id in rep:
         uid, mid = rep[msg.message_id]
         try:
@@ -1366,10 +1338,10 @@ async def reply_to(update, context):
                 await context.bot.edit_message_caption(chat_id=uid, message_id=mid, caption=msg.caption, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
         except Exception as e:
             error_msg = str(e).lower()
-            if "blocked" in error_msg or "deactivated" in error_msg:
+            if isinstance(e, Forbidden) or "blocked" in error_msg or "deactivated" in error_msg:
                 remove_blocked_user(uid)
-            elif "Message is not modified" not in str(e):
-                print(f"Ошибка: {e}")
+            elif "message is not modified" not in error_msg:
+                print(f"Ошибка редактирования: {e}")
 
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 async def button_handler(update, context):
@@ -1387,7 +1359,6 @@ async def button_handler(update, context):
                 pass
             await q.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
 
-    # Выбор пола в анкете
     if data.startswith("gender_"):
         gender = 'male' if data == "gender_male" else 'female'
         context.user_data['data']['gender'] = gender
@@ -1396,7 +1367,7 @@ async def button_handler(update, context):
               [InlineKeyboardButton("💬 #общение", callback_data="type_comm")]]
         await safe_send("Выберите цель:", reply_markup=InlineKeyboardMarkup(kb))
         return
-    # Выбор типа в анкете
+
     if data in ("type_support", "type_comm"):
         if context.user_data.get('step') == 5:
             p_type = 'support' if data == "type_support" else 'communication'
@@ -1411,7 +1382,7 @@ async def button_handler(update, context):
                 context.user_data.pop(k, None)
             await safe_send("✅ Анкета сохранена!\n📨 Напишите сообщение", reply_markup=cancel_btn())
         return
-    # Кнопка "Показать данные" (только владелец)
+
     if data.startswith("full_info_"):
         if uid != OWNER_ID:
             await q.answer("❌ Просмотр полных данных доступен только владельцу", show_alert=True)
@@ -1431,7 +1402,7 @@ async def button_handler(update, context):
         )
         await safe_send(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info=True))
         return
-    # Редактирование из полного профиля
+
     if data.startswith("edit_name_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1444,6 +1415,7 @@ async def button_handler(update, context):
         context.user_data['edit_from_info'] = from_info
         await safe_send("✏️ Введите новое имя:")
         return
+
     if data.startswith("edit_age_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1456,6 +1428,7 @@ async def button_handler(update, context):
         context.user_data['edit_from_info'] = from_info
         await safe_send("📅 Введите новый возраст (от 1 до 50):")
         return
+
     if data.startswith("edit_type_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1467,6 +1440,7 @@ async def button_handler(update, context):
                InlineKeyboardButton("💬 #общение", callback_data=f"confirm_type_{target_id}_{from_info}_comm")]]
         await safe_send("Выберите новый тип:", reply_markup=InlineKeyboardMarkup(kb))
         return
+
     if data.startswith("confirm_type_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1491,6 +1465,7 @@ async def button_handler(update, context):
         )
         await safe_send(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info))
         return
+
     if data.startswith("back_to_info_"):
         parts = data.split("_")
         from_info = parts[3] == 'True'
@@ -1507,7 +1482,7 @@ async def button_handler(update, context):
         else:
             await safe_send("Возврат к списку пользователей", reply_markup=back_button())
         return
-    # Кнопки для /user_info
+
     if data.startswith("edit_user_name_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1518,6 +1493,7 @@ async def button_handler(update, context):
         context.user_data['edit_from_info'] = False
         await safe_send("✏️ Введите новое имя:")
         return
+
     if data.startswith("edit_user_age_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1528,6 +1504,7 @@ async def button_handler(update, context):
         context.user_data['edit_from_info'] = False
         await safe_send("📅 Введите новый возраст (от 1 до 50):")
         return
+
     if data.startswith("edit_user_type_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1537,15 +1514,16 @@ async def button_handler(update, context):
                InlineKeyboardButton("💬 #общение", callback_data=f"confirm_type_{target_id}_False_comm")]]
         await safe_send("Выберите новый тип:", reply_markup=InlineKeyboardMarkup(kb))
         return
+
     if data.startswith("send_msg_to_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[3])
         context.user_data['send_to_user'] = target_id
-        await safe_send("📝 Введите сообщение для пользователя (оно будет отправлено с пометкой *от администрации*):", parse_mode="Markdown")
+        await safe_send("📝 Введите сообщение для пользователя (оно будет отправлено с пометкой *от владельца*):", parse_mode="Markdown")
         return
-    # Кнопки снятия бана/мута
+
     if data.startswith("unban_user_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1555,17 +1533,16 @@ async def button_handler(update, context):
             banned_users.discard(target_id)
             ban_until.pop(target_id, None)
             save_db()
-            # Отправляем уведомление пользователю
             try:
                 await context.bot.send_message(target_id, "👑 Владелец снял с вас бан.")
             except:
                 pass
             await safe_send(f"✅ Пользователь {get_user_name(target_id)} разбанен.")
-            # Обновляем кнопки
             await show_user_full_info(update, context, target_id)
         else:
             await safe_send("❌ Пользователь не забанен.")
         return
+
     if data.startswith("unmute_user_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1584,19 +1561,20 @@ async def button_handler(update, context):
         else:
             await safe_send("❌ Пользователь не замучен.")
         return
-    # Кнопки пагинации
+
     if data.startswith("list_page_"):
         page = int(data.split("_")[2])
         await send_list_page(q.message.chat.id, q.message.message_id, page, context)
         return
+
     if data == "user_back_main":
         await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
         return
-    # Выбор типа в анкете для админов
+
     if data.startswith("app_type_"):
         await application_type_callback(update, context)
         return
-    # Остальные кнопки
+
     if data == "confirm_broad":
         await execute_broadcast(update, context, uid)
     elif data == "cancel_broad":
@@ -1673,12 +1651,11 @@ async def button_handler(update, context):
             context.user_data.pop(k, None)
         await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
     elif data in ("mi", "admins"):
-        text = "ℹ️ В разработке" if data == "mi" else "👑 Напишите пожалуйста в бот: @anker_reachedtheend_bot"
+        text = "ℹ️ В разработке" if data == "mi" else "Ошибка 000x7542548x2"
         await safe_send(text, reply_markup=back_button())
 
 # ==================== ЗАПУСК ====================
 def run():
-    # Инициализируем базу данных
     init_db()
     load_db()
     app = Application.builder().token(TOKEN).build()
@@ -1699,7 +1676,6 @@ def run():
     app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("export_db", export_db, filters=filters.ChatType.PRIVATE))
 
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
