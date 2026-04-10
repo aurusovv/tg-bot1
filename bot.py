@@ -1868,9 +1868,31 @@ def run():
     global app
     app = Application.builder().token(TOKEN).build()
 
-    # ... (все обработчики команд остаются без изменений) ...
+    # === ДОБАВЛЯЕМ ВСЕ ОБРАБОТЧИКИ ===
+    app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("stop", stop, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("next", next_op, filters=filters.ChatType.PRIVATE))
 
-    # Удаляем возможный старый webhook (чтобы избежать конфликта 409)
+    app.add_handler(CommandHandler("ban", ban, filters=filters.ChatType.GROUPS))
+    app.add_handler(CommandHandler("unban", unban, filters=filters.ChatType.GROUPS))
+    app.add_handler(CommandHandler("mute", mute, filters=filters.ChatType.GROUPS))
+    app.add_handler(CommandHandler("unmute", unmute, filters=filters.ChatType.GROUPS))
+    app.add_handler(CommandHandler("info", info_command, filters=filters.ChatType.GROUPS))
+
+    app.add_handler(CommandHandler("stats", stats, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("maintenance", maintenance_command, filters=filters.ChatType.PRIVATE))
+
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
+    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
+    # === КОНЕЦ БЛОКА ОБРАБОТЧИКОВ ===
+
+    # Удаляем старый webhook (избегаем конфликта 409)
     from telegram import Bot
     bot = Bot(TOKEN)
     try:
@@ -1889,7 +1911,8 @@ def run():
 
 def shutdown_handler(signum, frame):
     logger.info("Получен сигнал завершения, останавливаем бота...")
-    app.stop()
+    if app:
+        app.stop()
     sys.exit(0)
 
 if __name__ == "__main__":
