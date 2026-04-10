@@ -2,10 +2,10 @@ import re
 import json
 import asyncio
 import os
-import threading
+import signal
+import sys
 import logging
 from datetime import datetime, timedelta
-from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from telegram.error import TelegramError, Forbidden, BadRequest
@@ -16,24 +16,6 @@ from psycopg2 import pool
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# ==================== ВЕБ-СЕРВЕР ====================
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-def index():
-    return "Bot is running!"
-
-@flask_app.route('/health')
-def health():
-    return "OK", 200
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host='0.0.0.0', port=port, debug=False)
-
-threading.Thread(target=run_web_server, daemon=True).start()
-logger.info("Веб-сервер запущен")
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = os.environ.get("TOKEN", "8608054971:AAEWfrZNqG-TXSyu1Udnvy7bZWEufuX807k")
@@ -332,7 +314,6 @@ def remove_blocked_user(user_id):
         if user_id in muted_users:
             muted_users.discard(user_id)
             mute_until.pop(user_id, None)
-        # Удаляем активные диалоги
         if user_id in waiting_for_forward:
             waiting_for_forward.discard(user_id)
             remove_active_dialog(user_id)
@@ -1019,7 +1000,8 @@ async def broadcast(update, context):
         "• GIF\n"
         "• Голосовые\n"
         "• Документы",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=cancel_btn()
     )
 
 async def save_broadcast_data(update, context, uid):
@@ -1158,15 +1140,29 @@ async def show_user_full_info(update, context, target_id):
 
 # ==================== ФУНКЦИЯ ДЛЯ ОТПРАВКИ СТРАНИЦЫ СПИСКА ====================
 async def send_list_page(chat_id, message_id, page, context):
-    users_per_page = 6  # изменено с 2 на 6
+    users_per_page = 6
     users_list = list(user_profiles.items())
-    total_pages = max(1, (len(users_list) + users_per_page - 1) // users_per_page)
+    total_users = len(users_list)
+    if total_users == 0:
+        text = "📋 **Пользователи**\n\nНет зарегистрированных пользователей."
+        if message_id:
+            try:
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown")
+            except:
+                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return
+
+    total_pages = max(1, (total_users + users_per_page - 1) // users_per_page)
     if page < 1:
         page = 1
     if page > total_pages:
         page = total_pages
+
     start = (page - 1) * users_per_page
-    end = start + users_per_page
+    end = min(start + users_per_page, total_users)
+
     text = f"📋 **Пользователи (стр. {page}/{total_pages})**\n\n"
     for uid, data in users_list[start:end]:
         name = data.get('name', '❌')
@@ -1179,6 +1175,7 @@ async def send_list_page(chat_id, message_id, page, context):
         else:
             text += f"🆔 `{uid}`\n"
         text += f"👤 {name} | {age} | {gender} | {p_type}\n\n"
+
     keyboard = []
     if page > 1:
         keyboard.append(InlineKeyboardButton("◀️ Назад", callback_data=f"list_page_{page-1}"))
@@ -1187,23 +1184,12 @@ async def send_list_page(chat_id, message_id, page, context):
     reply_markup = InlineKeyboardMarkup([keyboard]) if keyboard else None
 
     if message_id is None:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
+        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
     else:
         try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=text,
-                parse_mode="Markdown",
-                reply_markup=reply_markup
-            )
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception as e:
-            logger.error(f"Не удалось отредактировать сообщение {message_id}: {e}")
+            logger.error(f"Ошибка редактирования сообщения {message_id}: {e}")
 
 # ==================== АНКЕТА ДЛЯ ПОЛЬЗОВАТЕЛЯ ====================
 async def save_profile(update, context):
@@ -1216,14 +1202,14 @@ async def save_profile(update, context):
     if step == 1:
         context.user_data['data']['name'] = text
         context.user_data['step'] = 2
-        await update.message.reply_text("📝 Введите возраст (от 1 до 50 лет):")
+        await update.message.reply_text("📝 Введите возраст (от 1 до 50 лет):", reply_markup=cancel_btn())
     elif step == 2:
         if not text.isdigit():
-            await update.message.reply_text("❌ Пожалуйста, введите цифры!")
+            await update.message.reply_text("❌ Пожалуйста, введите цифры!", reply_markup=cancel_btn())
             return
         age = int(text)
         if age < 1 or age > 50:
-            await update.message.reply_text("❌ Пожалуйста, укажите корректный возраст")
+            await update.message.reply_text("❌ Пожалуйста, укажите корректный возраст", reply_markup=cancel_btn())
             return
         context.user_data['data']['age'] = text
         context.user_data['step'] = 3
@@ -1562,7 +1548,6 @@ async def button_handler(update, context):
             f"{get_gender_emoji(p.get('gender'))}\n"
             f"🏷️ Тип: {'🆘 #поддержка' if p.get('type') == 'support' else '💬 #общение' if p.get('type') == 'communication' else '❓ не выбрано'}"
         )
-        # Отправляем новое сообщение, а не редактируем старое
         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info=True))
         return
 
@@ -1576,7 +1561,7 @@ async def button_handler(update, context):
         context.user_data['edit_target'] = target_id
         context.user_data['edit_field'] = 'name'
         context.user_data['edit_from_info'] = from_info
-        await safe_send("✏️ Введите новое имя:")
+        await safe_send("✏️ Введите новое имя:", reply_markup=cancel_btn())
         return
 
     if data.startswith("edit_age_"):
@@ -1589,7 +1574,7 @@ async def button_handler(update, context):
         context.user_data['edit_target'] = target_id
         context.user_data['edit_field'] = 'age'
         context.user_data['edit_from_info'] = from_info
-        await safe_send("📅 Введите новый возраст (от 1 до 50):")
+        await safe_send("📅 Введите новый возраст (от 1 до 50):", reply_markup=cancel_btn())
         return
 
     if data.startswith("edit_type_"):
@@ -1689,7 +1674,7 @@ async def button_handler(update, context):
         context.user_data['edit_target'] = target_id
         context.user_data['edit_field'] = 'name'
         context.user_data['edit_from_info'] = False
-        await safe_send("✏️ Введите новое имя:")
+        await safe_send("✏️ Введите новое имя:", reply_markup=cancel_btn())
         return
 
     if data.startswith("edit_user_age_"):
@@ -1700,7 +1685,7 @@ async def button_handler(update, context):
         context.user_data['edit_target'] = target_id
         context.user_data['edit_field'] = 'age'
         context.user_data['edit_from_info'] = False
-        await safe_send("📅 Введите новый возраст (от 1 до 50):")
+        await safe_send("📅 Введите новый возраст (от 1 до 50):", reply_markup=cancel_btn())
         return
 
     if data.startswith("edit_user_type_"):
@@ -1719,7 +1704,7 @@ async def button_handler(update, context):
             return
         target_id = int(data.split("_")[3])
         context.user_data['send_to_user'] = target_id
-        await safe_send("📝 Введите сообщение для пользователя (оно будет отправлено с пометкой *от владельца*):", parse_mode="Markdown")
+        await safe_send("📝 Введите сообщение для пользователя (оно будет отправлено с пометкой *от владельца*):", parse_mode="Markdown", reply_markup=cancel_btn())
         return
 
     if data.startswith("unban_user_"):
@@ -1826,7 +1811,7 @@ async def button_handler(update, context):
         await safe_send(f"📋 Анкета:\n👤 {p['name']}\n📅 {p['age']}\n{gender_text}\n🏷️ {t}", reply_markup=settings_buttons())
     elif data in ("edit_name", "edit_age"):
         context.user_data['edit'] = data.split('_')[1]
-        await safe_send(f"✏️ Введите новое {'имя' if data == 'edit_name' else 'возраст'}:")
+        await safe_send(f"✏️ Введите новое {'имя' if data == 'edit_name' else 'возраст'}:", reply_markup=cancel_btn())
     elif data == "edit_type":
         kb = [[InlineKeyboardButton("🆘 #поддержка", callback_data="ch_type_support")], [InlineKeyboardButton("💬 #общение", callback_data="ch_type_comm")]]
         await safe_send("Выберите тип:", reply_markup=InlineKeyboardMarkup(kb))
@@ -1836,7 +1821,7 @@ async def button_handler(update, context):
         await safe_send("✅ Тип изменен", reply_markup=settings_buttons())
     elif data == "cancel":
         had_msg = uid in user_has_message
-        for k in ['awaiting', 'step', 'data', 'target', 'edit', 'awaiting_broadcast', 'target_type']:
+        for k in ['awaiting', 'step', 'data', 'target', 'edit', 'awaiting_broadcast', 'target_type', 'send_to_user', 'edit_target', 'edit_field', 'edit_from_info']:
             context.user_data.pop(k, None)
         if uid in waiting_for_forward:
             waiting_for_forward.remove(uid)
@@ -1852,7 +1837,7 @@ async def button_handler(update, context):
         await safe_send("❌ Отменено")
         await send_main_menu(update, context)
     elif data == "back":
-        for k in ['awaiting', 'step', 'data', 'target', 'edit', 'awaiting_broadcast', 'target_type']:
+        for k in ['awaiting', 'step', 'data', 'target', 'edit', 'awaiting_broadcast', 'target_type', 'send_to_user', 'edit_target', 'edit_field', 'edit_from_info']:
             context.user_data.pop(k, None)
         await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
     elif data in ("mi", "admins"):
@@ -1865,6 +1850,8 @@ def run():
     load_db()
     load_active_dialogs()
     load_forwarded_messages()
+    
+    global app
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
@@ -1889,8 +1876,29 @@ def run():
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
 
-    logger.info("Бот запущен")
-    app.run_polling()
+    # Запуск через webhook
+    port = int(os.environ.get("PORT", 8080))
+    webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if webhook_url:
+        webhook_url = f"{webhook_url}/webhook"
+        logger.info(f"Устанавливаем webhook: {webhook_url}")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="webhook",
+            webhook_url=webhook_url,
+            drop_pending_updates=True
+        )
+    else:
+        logger.warning("RENDER_EXTERNAL_URL не задан, используем polling (не рекомендуется для продакшена)")
+        app.run_polling()
+
+def shutdown_handler(signum, frame):
+    logger.info("Получен сигнал завершения, останавливаем бота...")
+    app.stop()
+    sys.exit(0)
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
     run()
