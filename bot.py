@@ -7,8 +7,9 @@ import sys
 import logging
 import threading
 import time
+import requests
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from telegram.error import TelegramError, Forbidden, BadRequest
 import psycopg2
@@ -90,7 +91,55 @@ def init_db():
                     PRIMARY KEY (group_id, message_id)
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            # Вставляем начальное значение maintenance_mode, если его нет
+            cur.execute("""
+                INSERT INTO bot_settings (key, value) VALUES ('maintenance_mode', 'false')
+                ON CONFLICT (key) DO NOTHING
+            """)
             conn.commit()
+    finally:
+        release_db_connection(conn)
+
+# ==================== РАБОТА С НАСТРОЙКАМИ БОТА ====================
+def load_maintenance_mode():
+    global maintenance_mode
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM bot_settings WHERE key = 'maintenance_mode'")
+            row = cur.fetchone()
+            if row:
+                maintenance_mode = row[0].lower() == 'true'
+            else:
+                maintenance_mode = False
+        logger.info(f"Режим технических работ загружен: {maintenance_mode}")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки maintenance_mode: {e}")
+        maintenance_mode = False
+    finally:
+        release_db_connection(conn)
+
+def save_maintenance_mode(value):
+    global maintenance_mode
+    maintenance_mode = value
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE bot_settings SET value = %s, updated_at = NOW()
+                WHERE key = 'maintenance_mode'
+            """, ('true' if value else 'false'))
+            conn.commit()
+        logger.info(f"Режим технических работ сохранён: {value}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения maintenance_mode: {e}")
     finally:
         release_db_connection(conn)
 
@@ -960,12 +1009,11 @@ async def maintenance_command(update, context):
         await update.message.reply_text("Использование: /maintenance on|off")
         return
     arg = context.args[0].lower()
-    global maintenance_mode
     if arg == "on":
-        maintenance_mode = True
+        save_maintenance_mode(True)
         await update.message.reply_text("🛠 Режим технических работ ВКЛЮЧЁН. Обычные пользователи не могут использовать бота.")
     elif arg == "off":
-        maintenance_mode = False
+        save_maintenance_mode(False)
         await update.message.reply_text("✅ Режим технических работ ВЫКЛЮЧЁН. Бот работает в штатном режиме.")
     else:
         await update.message.reply_text("Неверный аргумент. Используйте on или off")
@@ -1865,6 +1913,7 @@ def run():
     load_db()
     load_active_dialogs()
     load_forwarded_messages()
+    load_maintenance_mode()   # загружаем состояние тех.работ
     
     global app
     app = Application.builder().token(TOKEN).build()
@@ -1892,16 +1941,16 @@ def run():
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
 
-    # Безопасное удаление webhook (создаём временный цикл)
+    # Удаляем webhook синхронно
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(Bot(TOKEN).delete_webhook(drop_pending_updates=True))
-        loop.close()
-        logger.info("Webhook удалён")
-        time.sleep(1)
+        resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
+        if resp.status_code == 200:
+            logger.info("Webhook удалён")
+        else:
+            logger.warning(f"Не удалось удалить webhook: {resp.text}")
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
+    time.sleep(1)
 
     # Запускаем Flask для healthcheck
     threading.Thread(target=run_web_server, daemon=True).start()
