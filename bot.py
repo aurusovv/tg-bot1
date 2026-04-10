@@ -98,7 +98,6 @@ def init_db():
                     updated_at TIMESTAMP DEFAULT NOW()
                 )
             """)
-            # Вставляем начальное значение maintenance_mode, если его нет
             cur.execute("""
                 INSERT INTO bot_settings (key, value) VALUES ('maintenance_mode', 'false')
                 ON CONFLICT (key) DO NOTHING
@@ -453,16 +452,21 @@ def is_muted(uid):
         return True
     return False
 
-# ==================== КЛАВИАТУРЫ ====================
-def main_menu():
+# ==================== ДИНАМИЧЕСКОЕ ГЛАВНОЕ МЕНЮ ====================
+def main_menu(user_id):
+    """Главное меню, которое адаптируется под наличие анкеты"""
+    has_profile = user_id in user_profiles and user_profiles[user_id].get('name')
     keyboard = [
         [InlineKeyboardButton("🖊 Написать админу", callback_data="admin"),
-         InlineKeyboardButton("👨‍💻 Тех.поддержка", callback_data="support")],
-        [InlineKeyboardButton("⚙ Настройки", callback_data="settings"),
-         InlineKeyboardButton("📝 Отзывы", url=REVIEWS_LINK),
-         InlineKeyboardButton("📘 Правила", url=PRAVILA)],
-        [InlineKeyboardButton("👑 Попасть в администрацию", callback_data="admins")]
+         InlineKeyboardButton("👨‍💻 Тех.поддержка", callback_data="support")]
     ]
+    if has_profile:
+        keyboard[0].append(InlineKeyboardButton("⚙ Настройки", callback_data="settings"))
+    keyboard.append([
+        InlineKeyboardButton("📝 Отзывы", url=REVIEWS_LINK),
+        InlineKeyboardButton("📘 Правила", url=PRAVILA)
+    ])
+    keyboard.append([InlineKeyboardButton("👑 Попасть в администрацию", callback_data="admins")])
     return InlineKeyboardMarkup(keyboard)
 
 def settings_buttons():
@@ -494,11 +498,11 @@ def user_management_buttons(target_id):
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="user_back_main")])
     return InlineKeyboardMarkup(keyboard)
 
-def info_buttons(target_id, is_owner=False):
-    keyboard = [
-        [InlineKeyboardButton("👤 Показать данные", callback_data=f"full_info_{target_id}")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+def info_buttons(target_id, is_owner):
+    """Кнопка 'Показать данные' доступна только владельцу"""
+    if is_owner:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("👤 Показать данные", callback_data=f"full_info_{target_id}")]])
+    return None
 
 def profile_view_buttons(target_id, from_info=False):
     keyboard = [
@@ -705,6 +709,9 @@ async def check_subscription(update, context):
 
 # ==================== ФУНКЦИЯ ДЛЯ ОТПРАВКИ ГЛАВНОГО МЕНЮ ====================
 async def send_main_menu(update, context, chat_id=None, message_id=None):
+    uid = update.effective_user.id if update.effective_user else None
+    if not uid:
+        uid = chat_id if chat_id else update.effective_chat.id
     text = "Привет! Тебя приветствует бот\n\n<<𐔤ᥒ𐔤պᥱⲏⲏ𐔖ᥱ ᥒρ𐔖ɯ᥈𐔖ᥱ>>\n\nГлавное меню\n\n"
     if chat_id is None:
         chat_id = update.effective_chat.id
@@ -717,7 +724,7 @@ async def send_main_menu(update, context, chat_id=None, message_id=None):
                         chat_id=chat_id,
                         message_id=message_id,
                         media=InputMediaPhoto(media=photo, caption=text, parse_mode="Markdown"),
-                        reply_markup=main_menu()
+                        reply_markup=main_menu(uid)
                     )
                 except Exception:
                     await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
@@ -726,7 +733,7 @@ async def send_main_menu(update, context, chat_id=None, message_id=None):
                         photo=photo,
                         caption=text,
                         parse_mode="Markdown",
-                        reply_markup=main_menu()
+                        reply_markup=main_menu(uid)
                     )
             else:
                 await context.bot.send_photo(
@@ -734,7 +741,7 @@ async def send_main_menu(update, context, chat_id=None, message_id=None):
                     photo=photo,
                     caption=text,
                     parse_mode="Markdown",
-                    reply_markup=main_menu()
+                    reply_markup=main_menu(uid)
                 )
     except FileNotFoundError:
         if message_id:
@@ -744,7 +751,7 @@ async def send_main_menu(update, context, chat_id=None, message_id=None):
                     message_id=message_id,
                     text=text,
                     parse_mode="Markdown",
-                    reply_markup=main_menu()
+                    reply_markup=main_menu(uid)
                 )
             except Exception:
                 await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
@@ -752,23 +759,23 @@ async def send_main_menu(update, context, chat_id=None, message_id=None):
                     chat_id=chat_id,
                     text=text,
                     parse_mode="Markdown",
-                    reply_markup=main_menu()
+                    reply_markup=main_menu(uid)
                 )
         else:
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 parse_mode="Markdown",
-                reply_markup=main_menu()
+                reply_markup=main_menu(uid)
             )
 
 # ==================== КОМАНДЫ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ====================
 async def start(update, context):
-    if maintenance_mode and update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("🛠 Бот на технических работах. Пожалуйста, зайдите позже. Код: MAINT001")
-        return
     user = update.effective_user
     update_user_info(user.id, user.first_name, user.username)
+    if maintenance_mode and user.id != OWNER_ID:
+        await update.message.reply_text("🛠 Бот на технических работах. Пожалуйста, зайдите позже. Код: MAINT001")
+        return
     if not await check_subscription(update, context):
         await update.message.reply_text(
             "❌ Для использования бота необходимо подписаться на наш канал!\n\n"
@@ -783,10 +790,10 @@ async def help_command(update, context):
     await update.message.reply_text("Недоступно", parse_mode="Markdown")
 
 async def settings(update, context):
+    uid = update.message.chat_id
     if maintenance_mode and update.effective_user.id != OWNER_ID:
         await update.message.reply_text("🛠 Бот на технических работах. Код: MAINT001")
         return
-    uid = update.message.chat_id
     if not await check_subscription(update, context):
         await update.message.reply_text(
             "❌ Для использования бота необходимо подписаться на наш канал!",
@@ -1163,7 +1170,8 @@ async def user_info(update, context):
     username = query.lstrip('@').lower()
     found = None
     for uid, data in user_profiles.items():
-        if data.get('username', '').lower() == username:
+        db_username = data.get('username')
+        if db_username and db_username.lower() == username:
             found = uid
             break
     if found:
@@ -1315,6 +1323,10 @@ async def forward_msg(update, context):
     if not update.message or update.message.chat.type != "private":
         return
     uid = update.message.chat_id
+
+    # Регистрируем пользователя, если его ещё нет
+    user = update.effective_user
+    update_user_info(user.id, user.first_name, user.username)
 
     if context.user_data.get('admin_application') and context.user_data['admin_application'].get('questions'):
         await process_application_answer(update, context)
@@ -1599,6 +1611,11 @@ async def button_handler(update, context):
             f"{get_gender_emoji(p.get('gender'))}\n"
             f"🏷️ Тип: {'🆘 #поддержка' if p.get('type') == 'support' else '💬 #общение' if p.get('type') == 'communication' else '❓ не выбрано'}"
         )
+        # Удаляем исходное сообщение, отправляем новое
+        try:
+            await q.message.delete()
+        except:
+            pass
         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info=True))
         return
 
