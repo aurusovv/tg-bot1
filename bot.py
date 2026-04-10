@@ -6,8 +6,9 @@ import signal
 import sys
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from telegram.error import TelegramError, Forbidden, BadRequest
 import psycopg2
@@ -1868,7 +1869,7 @@ def run():
     global app
     app = Application.builder().token(TOKEN).build()
 
-    # === ДОБАВЛЯЕМ ВСЕ ОБРАБОТЧИКИ ===
+    # === ВСЕ ОБРАБОТЧИКИ ===
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
@@ -1890,23 +1891,32 @@ def run():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-    # === КОНЕЦ БЛОКА ОБРАБОТЧИКОВ ===
 
-    # Удаляем старый webhook (избегаем конфликта 409)
-    from telegram import Bot
-    import asyncio
-    import time
-    bot = Bot(TOKEN)
+    # Безопасное удаление webhook (создаём временный цикл)
     try:
-        asyncio.run(bot.delete_webhook(drop_pending_updates=True))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(Bot(TOKEN).delete_webhook(drop_pending_updates=True))
+        loop.close()
         logger.info("Webhook удалён")
-        time.sleep(1)  # Даём Telegram время обработать удаление
+        time.sleep(1)
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
 
-    # Запускаем Flask для healthcheck в отдельном потоке
+    # Запускаем Flask для healthcheck
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # Запускаем бота через polling (блокирующий вызов)
+    # Запускаем polling
     logger.info("Запуск polling...")
     app.run_polling()
+
+def shutdown_handler(signum, frame):
+    logger.info("Получен сигнал завершения, останавливаем бота...")
+    if app:
+        app.stop()
+    sys.exit(0)
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    run()
