@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 import logging
+import threading
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -12,6 +13,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
+from flask import Flask
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1844,7 +1846,27 @@ async def button_handler(update, context):
         text = "ℹ️ В разработке" if data == "mi" else "Ошибка 000x7542548x2"
         await safe_send(text, reply_markup=back_button())
 
+# ==================== ВЕБ-СЕРВЕР ДЛЯ HEALTHCHECK ====================
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+@flask_app.route('/health')
+def health():
+    return "OK", 200
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host='0.0.0.0', port=port, debug=False)
+
 # ==================== ЗАПУСК ====================
+async def start_bot():
+    # Удаляем возможный старый webhook (чтобы избежать конфликта 409)
+    from telegram import Bot
+    bot = Bot(TOKEN)
+    await bot.delete_webhook(drop_pending_updates=True)
+    # Запускаем polling
+    await app.run_polling()
+
 def run():
     init_db()
     load_db()
@@ -1876,22 +1898,11 @@ def run():
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
 
-    # Запуск через webhook
-    port = int(os.environ.get("PORT", 8080))
-    webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if webhook_url:
-        webhook_url = f"{webhook_url}/webhook"
-        logger.info(f"Устанавливаем webhook: {webhook_url}")
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path="webhook",
-            webhook_url=webhook_url,
-            drop_pending_updates=True
-        )
-    else:
-        logger.warning("RENDER_EXTERNAL_URL не задан, используем polling (не рекомендуется для продакшена)")
-        app.run_polling()
+    # Запускаем Flask для healthcheck в отдельном потоке
+    threading.Thread(target=run_web_server, daemon=True).start()
+    
+    # Запускаем бота через polling
+    asyncio.run(start_bot())
 
 def shutdown_handler(signum, frame):
     logger.info("Получен сигнал завершения, останавливаем бота...")
