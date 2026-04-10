@@ -1894,11 +1894,13 @@ def run():
 
     # Удаляем старый webhook (избегаем конфликта 409)
     from telegram import Bot
+    import asyncio
+    import time
     bot = Bot(TOKEN)
     try:
-        import asyncio
         asyncio.run(bot.delete_webhook(drop_pending_updates=True))
         logger.info("Webhook удалён")
+        time.sleep(1)  # Даём Telegram время обработать удаление
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
 
@@ -1908,14 +1910,3 @@ def run():
     # Запускаем бота через polling (блокирующий вызов)
     logger.info("Запуск polling...")
     app.run_polling()
-
-def shutdown_handler(signum, frame):
-    logger.info("Получен сигнал завершения, останавливаем бота...")
-    if app:
-        app.stop()
-    sys.exit(0)
-
-if __name__ == "__main__":
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
-    run()
