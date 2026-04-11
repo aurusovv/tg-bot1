@@ -257,7 +257,6 @@ def load_db():
             cur.execute("SELECT * FROM users")
             user_profiles = {}
             for row in cur:
-                # Приводим пустые строки к None
                 name = row['name']
                 age = row['age']
                 gender = row['gender']
@@ -467,7 +466,6 @@ def is_profile_complete(uid):
         return False
     if age is None or str(age).strip() == '':
         return False
-    # Дополнительно проверим, что возраст — число (но можно и без этого)
     try:
         int(str(age).strip())
     except:
@@ -858,12 +856,12 @@ async def stop(update, context):
         waiting_for_forward.remove(uid)
         remove_active_dialog(uid)
         if had_msg:
-            await context.bot.send_message(ADMIN_GROUP_ID, f"🚫 Пользователь {name} прекратил общение")
+            await context.bot.send_message(ADMIN_GROUP_ID, f"🚫 Пользователь {name} завершил диалог")
     if in_support:
         waiting_for_support.remove(uid)
         remove_active_dialog(uid)
         if had_msg:
-            await context.bot.send_message(SUPPORT_GROUP_ID, f"🚫 Пользователь {name} прекратил общение")
+            await context.bot.send_message(SUPPORT_GROUP_ID, f"🚫 Пользователь {name} завершил диалог")
     user_has_message.discard(uid)
     await update.message.reply_text("✅ Вы вышли из режима общения")
     await send_main_menu(update, context)
@@ -884,17 +882,17 @@ async def next_op(update, context):
 # ==================== ГРУППОВЫЕ КОМАНДЫ ====================
 async def ban(update, context):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Ответьте на сообщение пользователя")
+        return await update.message.reply_text("❌ Ответьте на сообщение пользователя. Код: BAN_ERR01")
     chat_id = update.effective_chat.id
     if chat_id == ADMIN_GROUP_ID:
         fwd_dict = forwarded
     elif chat_id == SUPPORT_GROUP_ID:
         fwd_dict = support_forwarded
     else:
-        return await update.message.reply_text("❌ Эта группа не поддерживается")
+        return await update.message.reply_text("❌ Эта группа не поддерживается. Код: BAN_ERR02")
     uid = get_uid_from_reply(update.message, fwd_dict)
     if not uid:
-        return await update.message.reply_text("❌ Не удалось определить пользователя")
+        return await update.message.reply_text("❌ Не удалось определить пользователя. Код: BAN_ERR03")
     name = get_user_name(uid)
     clear_user_data(uid)
     if not context.args:
@@ -908,7 +906,7 @@ async def ban(update, context):
         return await update.message.reply_text(f"✅ {name} забанен навсегда")
     seconds = parse_time(context.args[0])
     if not seconds:
-        return await update.message.reply_text("❌ Примеры: 30м, 2ч, 1д")
+        return await update.message.reply_text("❌ Примеры: 30м, 2ч, 1д. Код: BAN_ERR04")
     until = datetime.now() + timedelta(seconds=seconds)
     banned_users.add(uid)
     ban_until[uid] = until
@@ -921,19 +919,19 @@ async def ban(update, context):
 
 async def unban(update, context):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Ответьте на сообщение")
+        return await update.message.reply_text("❌ Ответьте на сообщение. Код: UNBAN_ERR01")
     chat_id = update.effective_chat.id
     if chat_id == ADMIN_GROUP_ID:
         fwd_dict = forwarded
     elif chat_id == SUPPORT_GROUP_ID:
         fwd_dict = support_forwarded
     else:
-        return await update.message.reply_text("❌ Эта группа не поддерживается")
+        return await update.message.reply_text("❌ Эта группа не поддерживается. Код: UNBAN_ERR02")
     uid = get_uid_from_reply(update.message, fwd_dict)
     if not uid:
-        return await update.message.reply_text("❌ Не удалось определить пользователя")
+        return await update.message.reply_text("❌ Не удалось определить пользователя. Код: UNBAN_ERR03")
     if uid not in banned_users:
-        return await update.message.reply_text("❌ Пользователь не забанен")
+        return await update.message.reply_text("❌ Пользователь не забанен. Код: UNBAN_ERR04")
     banned_users.discard(uid)
     ban_until.pop(uid, None)
     save_db()
@@ -945,24 +943,24 @@ async def unban(update, context):
 
 async def mute(update, context):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Ответьте на сообщение пользователя")
+        return await update.message.reply_text("❌ Ответьте на сообщение пользователя. Код: MUTE_ERR01")
     chat_id = update.effective_chat.id
     if chat_id == ADMIN_GROUP_ID:
         fwd_dict = forwarded
     elif chat_id == SUPPORT_GROUP_ID:
         fwd_dict = support_forwarded
     else:
-        return await update.message.reply_text("❌ Эта группа не поддерживается")
+        return await update.message.reply_text("❌ Эта группа не поддерживается. Код: MUTE_ERR02")
     uid = get_uid_from_reply(update.message, fwd_dict)
     if not uid:
-        return await update.message.reply_text("❌ Не удалось определить пользователя")
+        return await update.message.reply_text("❌ Не удалось определить пользователя. Код: MUTE_ERR03")
     name = get_user_name(uid)
     clear_user_data(uid)
     if not context.args:
-        return await update.message.reply_text("❌ Укажите время.\nПримеры: /mute 30м, /mute 2ч")
+        return await update.message.reply_text("❌ Укажите время.\nПримеры: /mute 30м, /mute 2ч. Код: MUTE_ERR04")
     seconds = parse_time(context.args[0])
     if not seconds:
-        return await update.message.reply_text("❌ Примеры: 30м, 2ч, 1д")
+        return await update.message.reply_text("❌ Примеры: 30м, 2ч, 1д. Код: MUTE_ERR05")
     until = datetime.now() + timedelta(seconds=seconds)
     muted_users.add(uid)
     mute_until[uid] = until
@@ -975,19 +973,19 @@ async def mute(update, context):
 
 async def unmute(update, context):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Ответьте на сообщение")
+        return await update.message.reply_text("❌ Ответьте на сообщение. Код: UNMUTE_ERR01")
     chat_id = update.effective_chat.id
     if chat_id == ADMIN_GROUP_ID:
         fwd_dict = forwarded
     elif chat_id == SUPPORT_GROUP_ID:
         fwd_dict = support_forwarded
     else:
-        return await update.message.reply_text("❌ Эта группа не поддерживается")
+        return await update.message.reply_text("❌ Эта группа не поддерживается. Код: UNMUTE_ERR02")
     uid = get_uid_from_reply(update.message, fwd_dict)
     if not uid:
-        return await update.message.reply_text("❌ Не удалось определить пользователя")
+        return await update.message.reply_text("❌ Не удалось определить пользователя. Код: UNMUTE_ERR03")
     if uid not in muted_users:
-        return await update.message.reply_text("❌ Пользователь не замучен")
+        return await update.message.reply_text("❌ Пользователь не замучен. Код: UNMUTE_ERR04")
     muted_users.discard(uid)
     mute_until.pop(uid, None)
     save_db()
@@ -1127,7 +1125,7 @@ async def save_broadcast_data(update, context, uid):
     elif msg.document:
         broadcast_data[uid] = {'type': 'document', 'content': msg.document.file_id, 'caption': msg.caption, 'parse_mode': msg.parse_mode if hasattr(msg, 'parse_mode') else None}
     else:
-        await update.message.reply_text("❌ Этот тип не поддерживается")
+        await update.message.reply_text("❌ Этот тип не поддерживается. Код: BC_ERR01")
         return
     await update.message.reply_text("📢 **ПРЕВЬЮ РАССЫЛКИ:**", parse_mode="Markdown")
     if broadcast_data[uid]['type'] == 'text':
@@ -1148,7 +1146,7 @@ async def save_broadcast_data(update, context, uid):
 async def execute_broadcast(update, context, uid):
     data = broadcast_data.pop(uid, None)
     if not data:
-        await update.callback_query.edit_message_text("❌ Нет данных")
+        await update.callback_query.edit_message_text("❌ Нет данных. Код: BC_ERR02")
         return
     await update.callback_query.edit_message_text(f"🚀 Рассылка {len(user_profiles)} пользователям...")
     sent, blocked = 0, 0
@@ -1253,7 +1251,7 @@ async def send_list_page(chat_id, page, context):
     users_list = list(user_profiles.items())
     total_users = len(users_list)
     if total_users == 0:
-        await context.bot.send_message(chat_id=chat_id, text="📋 **Пользователи**\n\nНет зарегистрированных пользователей.", parse_mode="Markdown")
+        await context.bot.send_message(chat_id=chat_id, text="📋 Пользователи\n\nНет зарегистрированных пользователей.")
         return
 
     total_pages = max(1, (total_users + users_per_page - 1) // users_per_page)
@@ -1265,7 +1263,7 @@ async def send_list_page(chat_id, page, context):
     start = (page - 1) * users_per_page
     end = min(start + users_per_page, total_users)
 
-    text = f"📋 **Пользователи (стр. {page}/{total_pages})**\n\n"
+    text = f"📋 Пользователи (стр. {page}/{total_pages})\n\n"
     for uid, data in users_list[start:end]:
         name = data.get('name', '❌')
         age = data.get('age', '❌')
@@ -1273,9 +1271,9 @@ async def send_list_page(chat_id, page, context):
         p_type = "🆘" if data.get('type') == 'support' else "💬" if data.get('type') == 'communication' else "❓"
         username = data.get('username')
         if username:
-            text += f"🆔 `{uid}` | @{username}\n"
+            text += f"🆔 {uid} | @{username}\n"
         else:
-            text += f"🆔 `{uid}`\n"
+            text += f"🆔 {uid}\n"
         text += f"👤 {name} | {age} | {gender} | {p_type}\n\n"
 
     keyboard = []
@@ -1285,7 +1283,7 @@ async def send_list_page(chat_id, page, context):
         keyboard.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"list_page_{page+1}"))
     reply_markup = InlineKeyboardMarkup([keyboard]) if keyboard else None
 
-    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
 # ==================== АНКЕТА ДЛЯ ПОЛЬЗОВАТЕЛЯ ====================
 async def save_profile(update, context):
@@ -1941,12 +1939,12 @@ async def button_handler(update, context):
             waiting_for_forward.remove(uid)
             remove_active_dialog(uid)
             if had_msg:
-                await context.bot.send_message(ADMIN_GROUP_ID, f"🚫 {get_user_name(uid)} отменил")
+                await context.bot.send_message(ADMIN_GROUP_ID, f"🚫 {get_user_name(uid)} завершил диалог")
         if uid in waiting_for_support:
             waiting_for_support.remove(uid)
             remove_active_dialog(uid)
             if had_msg:
-                await context.bot.send_message(SUPPORT_GROUP_ID, f"🚫 {get_user_name(uid)} отменил")
+                await context.bot.send_message(SUPPORT_GROUP_ID, f"🚫 {get_user_name(uid)} завершил диалог")
         user_has_message.discard(uid)
         await safe_send("❌ Отменено")
         await send_main_menu(update, context)
