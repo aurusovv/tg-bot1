@@ -266,11 +266,6 @@ def load_db():
                     'gender': row['gender'],
                     'type': row['type']
                 }
-            # Исправляем: если name — пустая строка, заменяем на None
-            for uid, data in user_profiles.items():
-                if data.get('name') == '':
-                    data['name'] = None
-                    logger.info(f"Исправлена пустая анкета для пользователя {uid}")
 
             cur.execute("SELECT user_id, until_date FROM bans")
             banned_users = set()
@@ -349,20 +344,17 @@ def update_user_info(user_id, first_name, username):
         if changed:
             save_db()
     else:
-        # Новый пользователь: анкета не заполнена, name = None
         user_profiles[user_id] = {
             "name": None, "age": None, "gender": None, "type": None,
             "first_name": first_name, "username": username,
             "registered_at": datetime.now().isoformat()
         }
         save_db()
-        logger.info(f"Новый пользователь зарегистрирован: {user_id}")
 
 def update_profile(user_id, name, age, gender, p_type):
     if user_id in user_profiles:
         user_profiles[user_id].update({"name": name, "age": age, "gender": gender, "type": p_type})
         save_db()
-        logger.info(f"Анкета сохранена для {user_id}: {name}, {age}, {gender}, {p_type}")
 
 def remove_blocked_user(user_id):
     if user_id in user_profiles:
@@ -460,16 +452,24 @@ def is_muted(uid):
         return True
     return False
 
+def has_profile(uid):
+    """Проверяет, заполнена ли анкета у пользователя"""
+    profile = user_profiles.get(uid)
+    if not profile:
+        return False
+    name = profile.get('name')
+    return name is not None and str(name).strip() != ''
+
 # ==================== ДИНАМИЧЕСКОЕ ГЛАВНОЕ МЕНЮ ====================
 def main_menu(user_id):
     """Главное меню: первый ряд - написать админу и техподдержка, второй ряд - настройки (если есть анкета), отзывы, правила"""
-    has_profile = user_id in user_profiles and user_profiles[user_id].get('name')
+    has_profile_flag = has_profile(user_id)
     keyboard = [
         [InlineKeyboardButton("🖊 Написать админу", callback_data="admin"),
          InlineKeyboardButton("👨‍💻 Тех.поддержка", callback_data="support")]
     ]
     second_row = []
-    if has_profile:
+    if has_profile_flag:
         second_row.append(InlineKeyboardButton("⚙ Настройки", callback_data="settings"))
     second_row.append(InlineKeyboardButton("📝 Отзывы", url=REVIEWS_LINK))
     second_row.append(InlineKeyboardButton("📘 Правила", url=PRAVILA))
@@ -808,15 +808,14 @@ async def settings(update, context):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]])
         )
         return
-    # Проверяем наличие анкеты
-    profile = user_profiles.get(uid)
-    if not profile or not profile.get('name'):
+    # Проверяем, есть ли анкета
+    if not has_profile(uid):
         await update.message.reply_text(
             "❌ Настройки недоступны, ваша анкета еще не создана.\n"
             "Заполните ее через 'Написать админу'"
         )
         return
-    p = profile
+    p = user_profiles[uid]
     t = "🆘 #поддержка" if p['type'] == 'support' else "💬 #общение" if p['type'] == 'communication' else "❓ не выбрано"
     gender_text = get_gender_emoji(p.get('gender'))
     await update.message.reply_text(
@@ -1018,12 +1017,9 @@ async def info_command(update, context):
 
 # ==================== КОМАНДЫ ДЛЯ ВЛАДЕЛЬЦА ====================
 async def clear_all_dialogs(context):
-    """Принудительно завершает все активные диалоги при включении техработ"""
     global waiting_for_forward, waiting_for_support, user_has_message, profile_sent
-    
     forward_users = list(waiting_for_forward)
     support_users = list(waiting_for_support)
-    
     for uid in forward_users:
         try:
             await context.bot.send_message(uid, "🛠 Бот перешёл в режим технических работ. Все диалоги завершены. Скоро всё заработает!")
@@ -1033,7 +1029,6 @@ async def clear_all_dialogs(context):
         remove_active_dialog(uid)
         user_has_message.discard(uid)
         profile_sent.discard(uid)
-    
     for uid in support_users:
         try:
             await context.bot.send_message(uid, "🛠 Бот перешёл в режим технических работ. Все диалоги завершены. Скоро всё заработает!")
@@ -1043,12 +1038,10 @@ async def clear_all_dialogs(context):
         remove_active_dialog(uid)
         user_has_message.discard(uid)
         profile_sent.discard(uid)
-    
     if forward_users:
         await context.bot.send_message(ADMIN_GROUP_ID, "🔧 Режим технических работ ВКЛЮЧЁН. Все диалоги с администраторами принудительно завершены.")
     if support_users:
         await context.bot.send_message(SUPPORT_GROUP_ID, "🔧 Режим технических работ ВКЛЮЧЁН. Все диалоги с техподдержкой принудительно завершены.")
-    
     logger.info(f"Принудительно завершено диалогов: admin={len(forward_users)}, support={len(support_users)}")
 
 async def maintenance_command(update, context):
@@ -1661,9 +1654,7 @@ async def button_handler(update, context):
             f"{get_gender_emoji(p.get('gender'))}\n"
             f"🏷️ Тип: {'🆘 #поддержка' if p.get('type') == 'support' else '💬 #общение' if p.get('type') == 'communication' else '❓ не выбрано'}"
         )
-        # Сначала отправляем новое сообщение
         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info=True))
-        # Потом удаляем исходное
         try:
             await q.message.delete()
         except:
@@ -1908,8 +1899,7 @@ async def button_handler(update, context):
             return
         context.user_data['target'] = data
         # Проверяем, есть ли анкета
-        profile = user_profiles.get(uid)
-        if profile and profile.get('name'):
+        if has_profile(uid):
             if data == "admin":
                 waiting_for_forward.add(uid)
                 save_active_dialog(uid, 'admin')
@@ -1924,10 +1914,10 @@ async def button_handler(update, context):
     elif data == "admins":
         await start_admin_application(update, context)
     elif data == "settings":
-        p = user_profiles.get(uid, {})
-        if not p.get('name'):
+        if not has_profile(uid):
             await safe_send("❌ Сначала заполните анкету")
             return
+        p = user_profiles[uid]
         t = "🆘 #поддержка" if p['type'] == 'support' else "💬 #общение" if p['type'] == 'communication' else "❓ не выбрано"
         gender_text = get_gender_emoji(p.get('gender'))
         await safe_send(f"📋 Анкета:\n👤 {p['name']}\n📅 {p['age']}\n{gender_text}\n🏷️ {t}", reply_markup=settings_buttons())
@@ -1984,12 +1974,11 @@ def run():
     load_db()
     load_active_dialogs()
     load_forwarded_messages()
-    load_maintenance_mode()   # загружаем состояние тех.работ
+    load_maintenance_mode()
     
     global app
     app = Application.builder().token(TOKEN).build()
 
-    # === ВСЕ ОБРАБОТЧИКИ ===
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
@@ -2012,21 +2001,20 @@ def run():
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
 
-    # Удаляем webhook синхронно
+    # Принудительное удаление webhook перед стартом
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
         if resp.status_code == 200:
             logger.info("Webhook удалён")
         else:
             logger.warning(f"Не удалось удалить webhook: {resp.text}")
+        time.sleep(2)  # Увеличенная задержка
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
-    time.sleep(1)
 
     # Запускаем Flask для healthcheck
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # Запускаем polling
     logger.info("Запуск polling...")
     app.run_polling()
 
