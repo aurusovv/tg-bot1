@@ -266,10 +266,11 @@ def load_db():
                     'gender': row['gender'],
                     'type': row['type']
                 }
-            # Исправляем пустые имена на None
+            # Исправляем: если name — пустая строка, заменяем на None
             for uid, data in user_profiles.items():
                 if data.get('name') == '':
                     data['name'] = None
+                    logger.info(f"Исправлена пустая анкета для пользователя {uid}")
 
             cur.execute("SELECT user_id, until_date FROM bans")
             banned_users = set()
@@ -348,17 +349,20 @@ def update_user_info(user_id, first_name, username):
         if changed:
             save_db()
     else:
+        # Новый пользователь: анкета не заполнена, name = None
         user_profiles[user_id] = {
             "name": None, "age": None, "gender": None, "type": None,
             "first_name": first_name, "username": username,
             "registered_at": datetime.now().isoformat()
         }
         save_db()
+        logger.info(f"Новый пользователь зарегистрирован: {user_id}")
 
 def update_profile(user_id, name, age, gender, p_type):
     if user_id in user_profiles:
         user_profiles[user_id].update({"name": name, "age": age, "gender": gender, "type": p_type})
         save_db()
+        logger.info(f"Анкета сохранена для {user_id}: {name}, {age}, {gender}, {p_type}")
 
 def remove_blocked_user(user_id):
     if user_id in user_profiles:
@@ -503,7 +507,6 @@ def user_management_buttons(target_id):
     return InlineKeyboardMarkup(keyboard)
 
 def info_buttons(target_id, is_owner):
-    """Кнопка 'Показать данные' доступна только владельцу"""
     if is_owner:
         return InlineKeyboardMarkup([[InlineKeyboardButton("👤 Показать данные", callback_data=f"full_info_{target_id}")]])
     return None
@@ -805,7 +808,7 @@ async def settings(update, context):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]])
         )
         return
-    # Проверяем, есть ли анкета (имя не пустое)
+    # Проверяем наличие анкеты
     profile = user_profiles.get(uid)
     if not profile or not profile.get('name'):
         await update.message.reply_text(
