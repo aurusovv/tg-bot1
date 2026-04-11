@@ -257,14 +257,19 @@ def load_db():
             cur.execute("SELECT * FROM users")
             user_profiles = {}
             for row in cur:
+                # Приводим пустые строки к None
+                name = row['name']
+                age = row['age']
+                gender = row['gender']
+                p_type = row['type']
                 user_profiles[row['user_id']] = {
                     'first_name': row['first_name'],
                     'username': row['username'],
                     'registered_at': row['registered_at'].isoformat() if row['registered_at'] else None,
-                    'name': row['name'],
-                    'age': row['age'],
-                    'gender': row['gender'],
-                    'type': row['type']
+                    'name': name if name and str(name).strip() != '' else None,
+                    'age': age if age and str(age).strip() != '' else None,
+                    'gender': gender if gender and str(gender).strip() != '' else None,
+                    'type': p_type if p_type and str(p_type).strip() != '' else None
                 }
 
             cur.execute("SELECT user_id, until_date FROM bans")
@@ -461,6 +466,11 @@ def is_profile_complete(uid):
     if name is None or str(name).strip() == '':
         return False
     if age is None or str(age).strip() == '':
+        return False
+    # Дополнительно проверим, что возраст — число (но можно и без этого)
+    try:
+        int(str(age).strip())
+    except:
         return False
     return True
 
