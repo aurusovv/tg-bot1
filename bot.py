@@ -266,6 +266,10 @@ def load_db():
                     'gender': row['gender'],
                     'type': row['type']
                 }
+            # Исправляем пустые имена на None
+            for uid, data in user_profiles.items():
+                if data.get('name') == '':
+                    data['name'] = None
 
             cur.execute("SELECT user_id, until_date FROM bans")
             banned_users = set()
@@ -454,18 +458,18 @@ def is_muted(uid):
 
 # ==================== ДИНАМИЧЕСКОЕ ГЛАВНОЕ МЕНЮ ====================
 def main_menu(user_id):
-    """Главное меню, которое адаптируется под наличие анкеты"""
+    """Главное меню: первый ряд - написать админу и техподдержка, второй ряд - настройки (если есть анкета), отзывы, правила"""
     has_profile = user_id in user_profiles and user_profiles[user_id].get('name')
     keyboard = [
         [InlineKeyboardButton("🖊 Написать админу", callback_data="admin"),
          InlineKeyboardButton("👨‍💻 Тех.поддержка", callback_data="support")]
     ]
+    second_row = []
     if has_profile:
-        keyboard[0].append(InlineKeyboardButton("⚙ Настройки", callback_data="settings"))
-    keyboard.append([
-        InlineKeyboardButton("📝 Отзывы", url=REVIEWS_LINK),
-        InlineKeyboardButton("📘 Правила", url=PRAVILA)
-    ])
+        second_row.append(InlineKeyboardButton("⚙ Настройки", callback_data="settings"))
+    second_row.append(InlineKeyboardButton("📝 Отзывы", url=REVIEWS_LINK))
+    second_row.append(InlineKeyboardButton("📘 Правила", url=PRAVILA))
+    keyboard.append(second_row)
     keyboard.append([InlineKeyboardButton("👑 Попасть в администрацию", callback_data="admins")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -801,13 +805,15 @@ async def settings(update, context):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]])
         )
         return
-    if uid not in user_profiles or not user_profiles[uid].get('name'):
+    # Проверяем, есть ли анкета (имя не пустое)
+    profile = user_profiles.get(uid)
+    if not profile or not profile.get('name'):
         await update.message.reply_text(
             "❌ Настройки недоступны, ваша анкета еще не создана.\n"
             "Заполните ее через 'Написать админу'"
         )
         return
-    p = user_profiles[uid]
+    p = profile
     t = "🆘 #поддержка" if p['type'] == 'support' else "💬 #общение" if p['type'] == 'communication' else "❓ не выбрано"
     gender_text = get_gender_emoji(p.get('gender'))
     await update.message.reply_text(
@@ -1008,6 +1014,40 @@ async def info_command(update, context):
     )
 
 # ==================== КОМАНДЫ ДЛЯ ВЛАДЕЛЬЦА ====================
+async def clear_all_dialogs(context):
+    """Принудительно завершает все активные диалоги при включении техработ"""
+    global waiting_for_forward, waiting_for_support, user_has_message, profile_sent
+    
+    forward_users = list(waiting_for_forward)
+    support_users = list(waiting_for_support)
+    
+    for uid in forward_users:
+        try:
+            await context.bot.send_message(uid, "🛠 Бот перешёл в режим технических работ. Все диалоги завершены. Скоро всё заработает!")
+        except:
+            pass
+        waiting_for_forward.discard(uid)
+        remove_active_dialog(uid)
+        user_has_message.discard(uid)
+        profile_sent.discard(uid)
+    
+    for uid in support_users:
+        try:
+            await context.bot.send_message(uid, "🛠 Бот перешёл в режим технических работ. Все диалоги завершены. Скоро всё заработает!")
+        except:
+            pass
+        waiting_for_support.discard(uid)
+        remove_active_dialog(uid)
+        user_has_message.discard(uid)
+        profile_sent.discard(uid)
+    
+    if forward_users:
+        await context.bot.send_message(ADMIN_GROUP_ID, "🔧 Режим технических работ ВКЛЮЧЁН. Все диалоги с администраторами принудительно завершены.")
+    if support_users:
+        await context.bot.send_message(SUPPORT_GROUP_ID, "🔧 Режим технических работ ВКЛЮЧЁН. Все диалоги с техподдержкой принудительно завершены.")
+    
+    logger.info(f"Принудительно завершено диалогов: admin={len(forward_users)}, support={len(support_users)}")
+
 async def maintenance_command(update, context):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("❌ У вас нет прав на эту команду")
@@ -1017,8 +1057,10 @@ async def maintenance_command(update, context):
         return
     arg = context.args[0].lower()
     if arg == "on":
+        if not maintenance_mode:
+            await clear_all_dialogs(context)
         save_maintenance_mode(True)
-        await update.message.reply_text("🛠 Режим технических работ ВКЛЮЧЁН. Обычные пользователи не могут использовать бота.")
+        await update.message.reply_text("🛠 Режим технических работ ВКЛЮЧЁН. Обычные пользователи не могут использовать бота. Все диалоги завершены.")
     elif arg == "off":
         save_maintenance_mode(False)
         await update.message.reply_text("✅ Режим технических работ ВЫКЛЮЧЁН. Бот работает в штатном режиме.")
@@ -1248,7 +1290,12 @@ async def send_list_page(chat_id, message_id, page, context):
         try:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception as e:
-            logger.error(f"Ошибка редактирования сообщения {message_id}: {e}")
+            logger.warning(f"Не удалось отредактировать {message_id}: {e}")
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except:
+                pass
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
 
 # ==================== АНКЕТА ДЛЯ ПОЛЬЗОВАТЕЛЯ ====================
 async def save_profile(update, context):
@@ -1611,12 +1658,13 @@ async def button_handler(update, context):
             f"{get_gender_emoji(p.get('gender'))}\n"
             f"🏷️ Тип: {'🆘 #поддержка' if p.get('type') == 'support' else '💬 #общение' if p.get('type') == 'communication' else '❓ не выбрано'}"
         )
-        # Удаляем исходное сообщение, отправляем новое
+        # Сначала отправляем новое сообщение
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info=True))
+        # Потом удаляем исходное
         try:
             await q.message.delete()
         except:
             pass
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info=True))
         return
 
     if data.startswith("edit_name_"):
@@ -1856,7 +1904,9 @@ async def button_handler(update, context):
             )
             return
         context.user_data['target'] = data
-        if uid in user_profiles and user_profiles[uid].get('name'):
+        # Проверяем, есть ли анкета
+        profile = user_profiles.get(uid)
+        if profile and profile.get('name'):
             if data == "admin":
                 waiting_for_forward.add(uid)
                 save_active_dialog(uid, 'admin')
@@ -1865,6 +1915,7 @@ async def button_handler(update, context):
                 save_active_dialog(uid, 'support')
             await safe_send("📨 Напишите сообщение", reply_markup=cancel_btn())
         else:
+            logger.info(f"Пользователь {uid} без анкеты, запускаем заполнение")
             context.user_data.update({'awaiting': True, 'step': 1, 'data': {}, 'target_type': data})
             await safe_send("📝 Заполните анкету:\n\nВведите имя:", reply_markup=cancel_btn())
     elif data == "admins":
