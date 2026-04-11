@@ -452,18 +452,18 @@ def is_muted(uid):
         return True
     return False
 
-def has_profile(uid):
-    """Проверяет, заполнена ли анкета у пользователя"""
+def is_profile_complete(uid):
+    """Проверяет, полностью ли заполнена анкета (имя и возраст не пустые)"""
     profile = user_profiles.get(uid)
     if not profile:
         return False
     name = profile.get('name')
-    return name is not None and str(name).strip() != ''
+    age = profile.get('age')
+    return name is not None and str(name).strip() != '' and age is not None and str(age).strip() != ''
 
 # ==================== ДИНАМИЧЕСКОЕ ГЛАВНОЕ МЕНЮ ====================
 def main_menu(user_id):
-    """Главное меню: первый ряд - написать админу и техподдержка, второй ряд - настройки (если есть анкета), отзывы, правила"""
-    has_profile_flag = has_profile(user_id)
+    has_profile_flag = is_profile_complete(user_id)
     keyboard = [
         [InlineKeyboardButton("🖊 Написать админу", callback_data="admin"),
          InlineKeyboardButton("👨‍💻 Тех.поддержка", callback_data="support")]
@@ -808,8 +808,7 @@ async def settings(update, context):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]])
         )
         return
-    # Проверяем, есть ли анкета
-    if not has_profile(uid):
+    if not is_profile_complete(uid):
         await update.message.reply_text(
             "❌ Настройки недоступны, ваша анкета еще не создана.\n"
             "Заполните ее через 'Написать админу'"
@@ -1898,8 +1897,12 @@ async def button_handler(update, context):
             )
             return
         context.user_data['target'] = data
-        # Проверяем, есть ли анкета
-        if has_profile(uid):
+        
+        # Убедимся, что пользователь есть в базе
+        if uid not in user_profiles:
+            update_user_info(uid, q.from_user.first_name, q.from_user.username)
+        
+        if is_profile_complete(uid):
             if data == "admin":
                 waiting_for_forward.add(uid)
                 save_active_dialog(uid, 'admin')
@@ -1914,7 +1917,7 @@ async def button_handler(update, context):
     elif data == "admins":
         await start_admin_application(update, context)
     elif data == "settings":
-        if not has_profile(uid):
+        if not is_profile_complete(uid):
             await safe_send("❌ Сначала заполните анкету")
             return
         p = user_profiles[uid]
@@ -2008,7 +2011,7 @@ def run():
             logger.info("Webhook удалён")
         else:
             logger.warning(f"Не удалось удалить webhook: {resp.text}")
-        time.sleep(2)  # Увеличенная задержка
+        time.sleep(2)
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
 
