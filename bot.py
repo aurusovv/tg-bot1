@@ -453,23 +453,26 @@ def is_muted(uid):
     return False
 
 def is_profile_complete(uid):
-    """Проверяет, полностью ли заполнена анкета (имя и возраст не пустые)"""
     profile = user_profiles.get(uid)
     if not profile:
         return False
     name = profile.get('name')
     age = profile.get('age')
-    return name is not None and str(name).strip() != '' and age is not None and str(age).strip() != ''
+    if name is None or str(name).strip() == '':
+        return False
+    if age is None or str(age).strip() == '':
+        return False
+    return True
 
-# ==================== ДИНАМИЧЕСКОЕ ГЛАВНОЕ МЕНЮ ====================
+# ==================== КЛАВИАТУРЫ ====================
 def main_menu(user_id):
-    has_profile_flag = is_profile_complete(user_id)
+    has_profile = is_profile_complete(user_id)
     keyboard = [
         [InlineKeyboardButton("🖊 Написать админу", callback_data="admin"),
          InlineKeyboardButton("👨‍💻 Тех.поддержка", callback_data="support")]
     ]
     second_row = []
-    if has_profile_flag:
+    if has_profile:
         second_row.append(InlineKeyboardButton("⚙ Настройки", callback_data="settings"))
     second_row.append(InlineKeyboardButton("📝 Отзывы", url=REVIEWS_LINK))
     second_row.append(InlineKeyboardButton("📘 Правила", url=PRAVILA))
@@ -1179,7 +1182,7 @@ async def list_users(update, context):
     page = 1
     if context.args and context.args[0].isdigit():
         page = int(context.args[0])
-    await send_list_page(update.message.chat.id, None, page, context)
+    await send_list_page(update.message.chat.id, page, context)
 
 async def user_info(update, context):
     if update.effective_user.id != OWNER_ID:
@@ -1235,19 +1238,12 @@ async def show_user_full_info(update, context, target_id):
         await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=user_management_buttons(target_id))
 
 # ==================== ФУНКЦИЯ ДЛЯ ОТПРАВКИ СТРАНИЦЫ СПИСКА ====================
-async def send_list_page(chat_id, message_id, page, context):
+async def send_list_page(chat_id, page, context):
     users_per_page = 6
     users_list = list(user_profiles.items())
     total_users = len(users_list)
     if total_users == 0:
-        text = "📋 **Пользователи**\n\nНет зарегистрированных пользователей."
-        if message_id:
-            try:
-                await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown")
-            except:
-                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-        else:
-            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=chat_id, text="📋 **Пользователи**\n\nНет зарегистрированных пользователей.", parse_mode="Markdown")
         return
 
     total_pages = max(1, (total_users + users_per_page - 1) // users_per_page)
@@ -1279,18 +1275,7 @@ async def send_list_page(chat_id, message_id, page, context):
         keyboard.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"list_page_{page+1}"))
     reply_markup = InlineKeyboardMarkup([keyboard]) if keyboard else None
 
-    if message_id is None:
-        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
-    else:
-        try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
-        except Exception as e:
-            logger.warning(f"Не удалось отредактировать {message_id}: {e}")
-            try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except:
-                pass
-            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
+    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=reply_markup)
 
 # ==================== АНКЕТА ДЛЯ ПОЛЬЗОВАТЕЛЯ ====================
 async def save_profile(update, context):
@@ -1366,7 +1351,6 @@ async def forward_msg(update, context):
         return
     uid = update.message.chat_id
 
-    # Регистрируем пользователя, если его ещё нет
     user = update.effective_user
     update_user_info(user.id, user.first_name, user.username)
 
@@ -1856,7 +1840,11 @@ async def button_handler(update, context):
 
     if data.startswith("list_page_"):
         page = int(data.split("_")[2])
-        await send_list_page(q.message.chat.id, q.message.message_id, page, context)
+        try:
+            await q.message.delete()
+        except:
+            pass
+        await send_list_page(q.message.chat.id, page, context)
         return
 
     if data == "user_back_main":
@@ -1898,9 +1886,9 @@ async def button_handler(update, context):
             return
         context.user_data['target'] = data
         
-        # Убедимся, что пользователь есть в базе
         if uid not in user_profiles:
             update_user_info(uid, q.from_user.first_name, q.from_user.username)
+            logger.info(f"Зарегистрирован новый пользователь {uid}")
         
         if is_profile_complete(uid):
             if data == "admin":
@@ -1912,8 +1900,9 @@ async def button_handler(update, context):
             await safe_send("📨 Напишите сообщение", reply_markup=cancel_btn())
         else:
             logger.info(f"Пользователь {uid} без анкеты, запускаем заполнение")
+            context.user_data.clear()
             context.user_data.update({'awaiting': True, 'step': 1, 'data': {}, 'target_type': data})
-            await safe_send("📝 Заполните анкету:\n\nВведите имя:", reply_markup=cancel_btn())
+            await safe_send("📝 **Заполните анкету:**\n\nВведите ваше имя:", reply_markup=cancel_btn())
     elif data == "admins":
         await start_admin_application(update, context)
     elif data == "settings":
@@ -2004,7 +1993,6 @@ def run():
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
 
-    # Принудительное удаление webhook перед стартом
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
         if resp.status_code == 200:
@@ -2015,7 +2003,6 @@ def run():
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
 
-    # Запускаем Flask для healthcheck
     threading.Thread(target=run_web_server, daemon=True).start()
     
     logger.info("Запуск polling...")
