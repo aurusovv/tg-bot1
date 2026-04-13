@@ -1,4 +1,4 @@
 flask
-python-telegram-bot[webhooks]==22.7
+python-telegram-bot==22.7
 psycopg2-binary
 requests
