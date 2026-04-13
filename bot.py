@@ -15,7 +15,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
-from flask import Flask, request
+from flask import Flask
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -731,6 +731,9 @@ async def start(update, context):
         return
     await send_main_menu(update, context)
 
+async def help_command(update, context):
+    await update.message.reply_text("Недоступно", parse_mode="Markdown")
+
 async def settings(update, context):
     uid = update.message.chat_id
     if maintenance_mode and update.effective_user.id != OWNER_ID:
@@ -981,9 +984,7 @@ async def stats(update, context):
         await update.message.reply_text("❌ Нет прав")
         return
     total = len(user_profiles)
-    # Реальные данные: пользователи, заполнившие анкету (есть имя и возраст)
     with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
-    # Типы считаем только у тех, у кого анкета заполнена (иначе они всё равно "не выбрали")
     sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support' and p.get('name') and p.get('age'))
     com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication' and p.get('name') and p.get('age'))
     not_chosen = with_profile - sup - com
@@ -1432,7 +1433,6 @@ async def button_handler(update, context):
             except:
                 pass
             await q.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
-    # Ответ на анкету
     if data.startswith("reply_to_app_"):
         if uid != OWNER_ID:
             await q.answer("❌ Нет прав", show_alert=True)
@@ -1445,7 +1445,6 @@ async def button_handler(update, context):
         else:
             await safe_send("❌ Не найден пользователь для ответа.")
         return
-    # Админ-панель
     if data == "admin_stats":
         total = len(user_profiles)
         with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
@@ -1486,7 +1485,6 @@ async def button_handler(update, context):
     if data == "admin_back_main":
         await safe_send("👑 **Панель владельца**\n\nВыберите действие:", parse_mode="Markdown", reply_markup=admin_panel_buttons())
         return
-    # Предупреждения
     if data.startswith("warn_user_"):
         if uid != OWNER_ID:
             await q.answer("❌ Нет прав", show_alert=True)
@@ -1533,7 +1531,6 @@ async def button_handler(update, context):
         else:
             await safe_send("❌ Пользователь не найден.")
         return
-    # Стандартные обработчики (сокращённо)
     if data.startswith("gender_"):
         gender = 'male' if data=="gender_male" else 'female'
         context.user_data['data']['gender'] = gender
@@ -1824,7 +1821,6 @@ async def button_handler(update, context):
             context.user_data.pop(k, None)
         await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
         return
-    # Обработка текстовых ответов
     if context.user_data.get('reply_to_applicant'):
         user_id = context.user_data.pop('reply_to_applicant')
         try:
@@ -1885,7 +1881,7 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port, debug=False)
 
-# ==================== ЗАПУСК (POLLING + WEBHOOK) ====================
+# ==================== ЗАПУСК (POLLING) ====================
 def run():
     init_db()
     load_db()
@@ -1897,6 +1893,7 @@ def run():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("stop", stop, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("next", next_op, filters=filters.ChatType.PRIVATE))
@@ -1918,7 +1915,7 @@ def run():
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
 
-    # Удаляем webhook перед стартом (на всякий случай)
+    # Удаляем webhook перед стартом (на случай, если он остался)
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
         if resp.status_code == 200:
@@ -1932,15 +1929,9 @@ def run():
     # Запускаем Flask для healthcheck в отдельном потоке
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # Запускаем polling – на Render это вызовет конфликт 409, поэтому используем webhook, если задан RENDER_EXTERNAL_URL
-    webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if webhook_url:
-        webhook_url = f"{webhook_url}/webhook"
-        logger.info(f"Запуск в режиме webhook: {webhook_url}")
-        app.run_webhook(listen="0.0.0.0", port=int(os.environ.get("PORT", 8080)), url_path="webhook", webhook_url=webhook_url, drop_pending_updates=True)
-    else:
-        logger.info("Запуск в режиме polling (локальная отладка)")
-        app.run_polling()
+    # Запускаем polling
+    logger.info("Запуск polling...")
+    app.run_polling()
 
 def shutdown_handler(signum, frame):
     logger.info("Сигнал завершения, останавливаем бота...")
