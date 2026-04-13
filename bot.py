@@ -15,7 +15,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
-from flask import Flask
+from flask import Flask, request
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -46,6 +46,7 @@ def get_db_connection():
 def release_db_connection(conn):
     db_pool.putconn(conn)
 
+# ==================== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ====================
 def init_db():
     conn = get_db_connection()
     try:
@@ -161,6 +162,7 @@ mute_until = {}
 user_profiles = {}
 maintenance_mode = False
 
+# ==================== РАБОТА С БАЗОЙ ДАННЫХ (ДИАЛОГИ) ====================
 def save_active_dialog(user_id, chat_type):
     conn = get_db_connection()
     try:
@@ -247,6 +249,7 @@ def remove_forwarded_message(group_id, message_id):
     finally:
         release_db_connection(conn)
 
+# ==================== ОСТАЛЬНЫЕ ФУНКЦИИ РАБОТЫ С БАЗОЙ ====================
 def load_db():
     global banned_users, muted_users, ban_until, mute_until, user_profiles
     conn = get_db_connection()
@@ -663,6 +666,7 @@ async def application_type_callback(update, context):
     app_data['current_q'] = 0
     await query.edit_message_text(app_data['questions'][0])
 
+# ==================== ПРОВЕРКИ ====================
 async def check_group_access(update, context):
     chat = update.effective_chat
     if chat.type in ["group","supergroup"] and chat.id not in ALLOWED_GROUPS:
@@ -682,12 +686,12 @@ async def check_subscription(update, context):
     except:
         return False
 
+# ==================== ГЛАВНОЕ МЕНЮ (ОПТИМИЗИРОВАННОЕ) ====================
 async def send_main_menu(update, context, chat_id=None, message_id=None):
     uid = update.effective_user.id if update.effective_user else (chat_id or update.effective_chat.id)
     text = "Привет! Тебя приветствует бот\n\n<<𐔤ᥒ𐔤պᥱⲏⲏ𐔖ᥱ ᥒρ𐔖ɯ᥈𐔖ᥱ>>\n\nГлавное меню\n\n"
     if chat_id is None:
         chat_id = update.effective_chat.id
-    # Отправляем фото, если есть; если нет – текст
     if os.path.exists("welcome.png"):
         with open("welcome.png", "rb") as photo:
             if message_id:
@@ -782,20 +786,20 @@ async def next_op(update, context):
     else:
         await update.message.reply_text("❌ Вы не в режиме общения")
 
-# ==================== ГРУППОВЫЕ КОМАНДЫ (ban, mute, info) ====================
+# ==================== ГРУППОВЫЕ КОМАНДЫ ====================
 async def ban(update, context):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Ответьте на сообщение пользователя")
+        return await update.message.reply_text("❌ Ответьте на сообщение пользователя. Код: BAN_ERR01")
     cid = update.effective_chat.id
     if cid == ADMIN_GROUP_ID:
         fwd = forwarded
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается")
+        return await update.message.reply_text("❌ Группа не поддерживается. Код: BAN_ERR02")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
-        return await update.message.reply_text("❌ Не удалось определить пользователя")
+        return await update.message.reply_text("❌ Не удалось определить пользователя. Код: BAN_ERR03")
     name = get_user_name(uid)
     clear_user_data(uid)
     if not context.args:
@@ -809,7 +813,7 @@ async def ban(update, context):
         return await update.message.reply_text(f"✅ {name} забанен навсегда")
     sec = parse_time(context.args[0])
     if not sec:
-        return await update.message.reply_text("❌ Примеры: 30м, 2ч, 1д")
+        return await update.message.reply_text("❌ Примеры: 30м, 2ч, 1д. Код: BAN_ERR04")
     until = datetime.now() + timedelta(seconds=sec)
     banned_users.add(uid)
     ban_until[uid] = until
@@ -822,19 +826,19 @@ async def ban(update, context):
 
 async def unban(update, context):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Ответьте на сообщение")
+        return await update.message.reply_text("❌ Ответьте на сообщение. Код: UNBAN_ERR01")
     cid = update.effective_chat.id
     if cid == ADMIN_GROUP_ID:
         fwd = forwarded
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается")
+        return await update.message.reply_text("❌ Группа не поддерживается. Код: UNBAN_ERR02")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
-        return await update.message.reply_text("❌ Не удалось определить пользователя")
+        return await update.message.reply_text("❌ Не удалось определить пользователя. Код: UNBAN_ERR03")
     if uid not in banned_users:
-        return await update.message.reply_text("❌ Пользователь не забанен")
+        return await update.message.reply_text("❌ Пользователь не забанен. Код: UNBAN_ERR04")
     banned_users.discard(uid)
     ban_until.pop(uid, None)
     save_db()
@@ -846,24 +850,24 @@ async def unban(update, context):
 
 async def mute(update, context):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Ответьте на сообщение")
+        return await update.message.reply_text("❌ Ответьте на сообщение. Код: MUTE_ERR01")
     cid = update.effective_chat.id
     if cid == ADMIN_GROUP_ID:
         fwd = forwarded
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается")
+        return await update.message.reply_text("❌ Группа не поддерживается. Код: MUTE_ERR02")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
-        return await update.message.reply_text("❌ Не удалось определить пользователя")
+        return await update.message.reply_text("❌ Не удалось определить пользователя. Код: MUTE_ERR03")
     name = get_user_name(uid)
     clear_user_data(uid)
     if not context.args:
-        return await update.message.reply_text("❌ Укажите время: /mute 30м")
+        return await update.message.reply_text("❌ Укажите время: /mute 30м. Код: MUTE_ERR04")
     sec = parse_time(context.args[0])
     if not sec:
-        return await update.message.reply_text("❌ Примеры: 30м, 2ч, 1д")
+        return await update.message.reply_text("❌ Примеры: 30м, 2ч, 1д. Код: MUTE_ERR05")
     until = datetime.now() + timedelta(seconds=sec)
     muted_users.add(uid)
     mute_until[uid] = until
@@ -876,19 +880,19 @@ async def mute(update, context):
 
 async def unmute(update, context):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Ответьте на сообщение")
+        return await update.message.reply_text("❌ Ответьте на сообщение. Код: UNMUTE_ERR01")
     cid = update.effective_chat.id
     if cid == ADMIN_GROUP_ID:
         fwd = forwarded
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается")
+        return await update.message.reply_text("❌ Группа не поддерживается. Код: UNMUTE_ERR02")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
-        return await update.message.reply_text("❌ Не удалось определить пользователя")
+        return await update.message.reply_text("❌ Не удалось определить пользователя. Код: UNMUTE_ERR03")
     if uid not in muted_users:
-        return await update.message.reply_text("❌ Пользователь не замучен")
+        return await update.message.reply_text("❌ Пользователь не замучен. Код: UNMUTE_ERR04")
     muted_users.discard(uid)
     mute_until.pop(uid, None)
     save_db()
@@ -915,7 +919,7 @@ async def info_command(update, context):
         return await update.message.reply_text("❌ Не удалось определить пользователя")
     p = user_profiles.get(uid, {})
     is_owner = update.effective_user.id == OWNER_ID
-    text = f"📋 **АНКЕТА ПОЛЬЗОВАТЕЛЯ:**\n\n👤 {get_user_name(uid)}\n✏️ Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🆘 #поддержка" if p.get('type')=='support' else "💬 #общение" if p.get('type')=='communication' else "❓ не выбрано"
+    text = f"📋 **АНКЕТА ПОЛЬЗОВАТЕЛЯ:**\n\n👤 {get_user_name(uid)}\n✏️ Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n{'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}"
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=info_buttons(uid, is_owner))
 
 # ==================== КОМАНДЫ ВЛАДЕЛЬЦА ====================
@@ -977,11 +981,19 @@ async def stats(update, context):
         await update.message.reply_text("❌ Нет прав")
         return
     total = len(user_profiles)
+    # Реальные данные: пользователи, заполнившие анкету (есть имя и возраст)
     with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
-    sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support')
-    com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication')
+    # Типы считаем только у тех, у кого анкета заполнена (иначе они всё равно "не выбрали")
+    sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support' and p.get('name') and p.get('age'))
+    com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication' and p.get('name') and p.get('age'))
+    not_chosen = with_profile - sup - com
     await update.message.reply_text(
-        f"📊 **Статистика**\n\n👥 Всего: `{total}`\n✅ С анкетой: `{with_profile}`\n🆘 Поддержка: `{sup}`\n💬 Общение: `{com}`\n❓ Не выбрали: `{total - sup - com}`",
+        f"📊 **Статистика**\n\n"
+        f"👥 Всего в базе: `{total}`\n"
+        f"✅ С анкетой: `{with_profile}`\n"
+        f"🆘 Поддержка: `{sup}`\n"
+        f"💬 Общение: `{com}`\n"
+        f"❓ Не выбрали тип: `{not_chosen}`",
         parse_mode="Markdown"
     )
 
@@ -1437,9 +1449,13 @@ async def button_handler(update, context):
     if data == "admin_stats":
         total = len(user_profiles)
         with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
-        sup = sum(1 for p in user_profiles.values() if p.get('type')=='support')
-        com = sum(1 for p in user_profiles.values() if p.get('type')=='communication')
-        await safe_send(f"📊 **Статистика**\n\n👥 Всего: `{total}`\n✅ С анкетой: `{with_profile}`\n🆘 Поддержка: `{sup}`\n💬 Общение: `{com}`\n❓ Не выбрали: `{total-sup-com}`", parse_mode="Markdown", reply_markup=admin_panel_buttons())
+        sup = sum(1 for p in user_profiles.values() if p.get('type')=='support' and p.get('name') and p.get('age'))
+        com = sum(1 for p in user_profiles.values() if p.get('type')=='communication' and p.get('name') and p.get('age'))
+        not_chosen = with_profile - sup - com
+        await safe_send(
+            f"📊 **Статистика**\n\n👥 Всего: `{total}`\n✅ С анкетой: `{with_profile}`\n🆘 Поддержка: `{sup}`\n💬 Общение: `{com}`\n❓ Не выбрали: `{not_chosen}`",
+            parse_mode="Markdown", reply_markup=admin_panel_buttons()
+        )
         return
     if data == "admin_list_users":
         await send_list_page(q.message.chat.id, 1, context)
@@ -1517,7 +1533,7 @@ async def button_handler(update, context):
         else:
             await safe_send("❌ Пользователь не найден.")
         return
-    # Стандартные обработчики (gender, type, full_info, edit_name и т.д.) – сокращённо
+    # Стандартные обработчики (сокращённо)
     if data.startswith("gender_"):
         gender = 'male' if data=="gender_male" else 'female'
         context.user_data['data']['gender'] = gender
@@ -1808,7 +1824,7 @@ async def button_handler(update, context):
             context.user_data.pop(k, None)
         await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
         return
-    # Обработка текстовых ответов (для поиска, предупреждений, ответа на анкету)
+    # Обработка текстовых ответов
     if context.user_data.get('reply_to_applicant'):
         user_id = context.user_data.pop('reply_to_applicant')
         try:
@@ -1857,44 +1873,52 @@ async def button_handler(update, context):
         return
     await safe_send("❌ Неизвестная команда. Код: BUTTON_ERR01")
 
-# ==================== ВЕБ-СЕРВЕР ====================
+# ==================== ВЕБ-СЕРВЕР ДЛЯ HEALTHCHECK ====================
 flask_app = Flask(__name__)
+
 @flask_app.route('/')
 @flask_app.route('/health')
 def health():
     return "OK", 200
+
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port, debug=False)
 
+# ==================== ЗАПУСК (POLLING + WEBHOOK) ====================
 def run():
     init_db()
     load_db()
     load_active_dialogs()
     load_forwarded_messages()
     load_maintenance_mode()
+    
     global app
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
-   # app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("stop", stop, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("next", next_op, filters=filters.ChatType.PRIVATE))
+
     app.add_handler(CommandHandler("ban", ban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unban", unban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("mute", mute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unmute", unmute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("info", info_command, filters=filters.ChatType.GROUPS))
+
     app.add_handler(CommandHandler("stats", stats, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("maintenance", maintenance_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("admin_panel", admin_panel, filters=filters.ChatType.PRIVATE))
+
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-    # Удаляем webhook
+
+    # Удаляем webhook перед стартом (на всякий случай)
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
         if resp.status_code == 200:
@@ -1904,9 +1928,19 @@ def run():
         time.sleep(2)
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
+
+    # Запускаем Flask для healthcheck в отдельном потоке
     threading.Thread(target=run_web_server, daemon=True).start()
-    logger.info("Запуск polling...")
-    app.run_polling()
+    
+    # Запускаем polling – на Render это вызовет конфликт 409, поэтому используем webhook, если задан RENDER_EXTERNAL_URL
+    webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if webhook_url:
+        webhook_url = f"{webhook_url}/webhook"
+        logger.info(f"Запуск в режиме webhook: {webhook_url}")
+        app.run_webhook(listen="0.0.0.0", port=int(os.environ.get("PORT", 8080)), url_path="webhook", webhook_url=webhook_url, drop_pending_updates=True)
+    else:
+        logger.info("Запуск в режиме polling (локальная отладка)")
+        app.run_polling()
 
 def shutdown_handler(signum, frame):
     logger.info("Сигнал завершения, останавливаем бота...")
