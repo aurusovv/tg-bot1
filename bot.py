@@ -97,7 +97,6 @@ def init_db():
                     updated_at TIMESTAMP DEFAULT NOW()
                 )
             """)
-            # Добавляем id в warnings, если его нет
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS warnings (
                     id SERIAL PRIMARY KEY,
@@ -107,7 +106,7 @@ def init_db():
                     warned_at TIMESTAMP DEFAULT NOW()
                 )
             """)
-            # Миграция для старых таблиц без id
+            # Миграция для старых таблиц (если колонки id нет)
             try:
                 cur.execute("ALTER TABLE warnings ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY")
             except:
@@ -591,7 +590,6 @@ async def process_application_answer(update, context):
     app_data['answers'].append(answer)
     app_data['current_q'] += 1
     if app_data['current_q'] < len(app_data['questions']):
-        # Отправляем следующий вопрос с кнопкой отмены
         await update.message.reply_text(app_data['questions'][app_data['current_q']], reply_markup=cancel_btn())
     else:
         await finish_application(update, context)
@@ -626,7 +624,6 @@ async def finish_application(update, context):
     global application_messages
     try:
         for idx, part in enumerate(parts):
-            # Отправляем без кнопки "Ответить"
             sent = await context.bot.send_message(
                 chat_id=ADMIN_APPLICATION_GROUP_ID,
                 text=part,
@@ -1505,7 +1502,6 @@ async def reply_to(update, context):
         await msg.reply_text("📝 Внутреннее сообщение администратора (не отправлено пользователю)")
         return
     cid, rid = msg.chat.id, msg.reply_to_message.message_id
-    # Обработка ответа на анкету (без кнопки)
     if cid == ADMIN_APPLICATION_GROUP_ID and rid in application_messages:
         user_id = application_messages[rid]
         if user_id:
@@ -1516,7 +1512,6 @@ async def reply_to(update, context):
                 logger.error(f"Ошибка ответа на анкету: {e}")
                 await msg.reply_text(f"❌ Не удалось отправить ответ. Пожалуйста, обратитесь в техподдержку. Код: APP_ERR05")
         return
-    # Обработка обычных диалогов
     if cid == ADMIN_GROUP_ID and rid in forwarded:
         fwd, rep = forwarded, admin_replies
         chat_type = 'admin'
@@ -1526,11 +1521,10 @@ async def reply_to(update, context):
     else:
         return
     uid, _ = fwd[rid]
-    if not msg.edit_date:  # Новое сообщение
+    if not msg.edit_date:
         try:
             sent = await send_media_to_user(context.bot, uid, msg)
             rep[msg.message_id] = (uid, sent.message_id)
-            # Отправляем пользователю кнопку "Ответить"
             await add_reply_button_to_user(uid, chat_type, context, original_message_id=sent.message_id)
         except Exception as e:
             err = str(e).lower()
@@ -1541,7 +1535,7 @@ async def reply_to(update, context):
                 if "not enough rights" not in err and "message is not modified" not in err:
                     logger.error(f"Ошибка отправки ответа: {e}")
                     await msg.reply_text("❌ Не удалось доставить сообщение пользователю. Пожалуйста, обратитесь в техподдержку. Код: REP_ERR06")
-    elif msg.edit_date and msg.message_id in rep:  # Редактирование
+    elif msg.edit_date and msg.message_id in rep:
         uid, mid = rep[msg.message_id]
         try:
             if msg.text:
@@ -1555,9 +1549,7 @@ async def reply_to(update, context):
             elif "message is not modified" not in err:
                 logger.error(f"Ошибка редактирования: {e}")
 
-# Обработчик для edited сообщений в группах (отдельно, чтобы гарантированно ловить)
 async def edited_reply_to(update, context):
-    # Этот хэндлер будет вызван только для edited сообщений
     await reply_to(update, context)
 
 # ==================== ОБРАБОТЧИК КНОПОК (CALLBACK) ====================
@@ -1595,7 +1587,6 @@ async def button_handler(update, context):
                 cur.execute("DELETE FROM warnings WHERE id = %s", (warn_id,))
                 conn.commit()
             await q.message.reply_text(f"✅ Предупреждение #{warn_id} снято.")
-            # Удаляем клавиатуру у сообщения
             try:
                 await q.message.edit_reply_markup(reply_markup=None)
             except:
@@ -1607,7 +1598,7 @@ async def button_handler(update, context):
             release_db_connection(conn)
         return
 
-    # Ответ на анкету (через callback) – оставляем для обратной совместимости, но можно убрать
+    # Ответ на анкету (через callback, оставлено для совместимости)
     if data.startswith("reply_to_app_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1622,11 +1613,73 @@ async def button_handler(update, context):
             await safe_send("❌ Не удалось найти пользователя для ответа.")
         return
 
-    # Админ-панель (осталось без изменений, но для краткости опускаю повтор кода, он такой же как в предыдущей версии)
-    # ... (весь остальной код кнопок без изменений, кроме добавления обработки предупреждений)
-    # Поскольку код большой, вставлю только изменённые части для предупреждений и основные блоки.
+    # ========== АДМИН-ПАНЕЛЬ И СТАТИСТИКА ==========
+    if data == "admin_stats":
+        total = len(user_profiles)
+        sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support')
+        com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication')
+        await safe_send(
+            f"📊 **Статистика**\n\n"
+            f"👥 Всего пользователей: `{total}`\n"
+            f"🆘 Поддержка: `{sup}`\n"
+            f"💬 Общение: `{com}`\n"
+            f"❓ Не выбрали тип: `{total - sup - com}`",
+            parse_mode="Markdown", reply_markup=admin_panel_buttons()
+        )
+        return
+    if data == "admin_list_users":
+        await send_list_page(q.message.chat.id, 1, context)
+        try:
+            await q.message.delete()
+        except:
+            pass
+        return
+    if data == "admin_search_user":
+        context.user_data['awaiting_user_search'] = True
+        await safe_send("🔍 Введите ID или @username пользователя:", reply_markup=cancel_btn())
+        return
+    if data == "admin_broadcast":
+        context.user_data['awaiting_broadcast'] = True
+        await safe_send(
+            "📢 **РАССЫЛКА**\n\n"
+            "Отправьте сообщение для рассылки.\n\n"
+            "Поддерживаются:\n"
+            "• Текст (с форматированием)\n"
+            "• Фото\n"
+            "• Видео\n"
+            "• GIF\n"
+            "• Голосовые\n"
+            "• Документы",
+            parse_mode="Markdown", reply_markup=cancel_btn()
+        )
+        return
+    if data == "admin_maintenance":
+        kb = [[InlineKeyboardButton("🛠 Включить", callback_data="maintenance_on"), InlineKeyboardButton("✅ Выключить", callback_data="maintenance_off")]]
+        await safe_send("🔧 Управление режимом технических работ:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data == "maintenance_on":
+        if not maintenance_mode:
+            await clear_all_dialogs(context)
+        save_maintenance_mode(True)
+        await safe_send("🛠 Режим технических работ ВКЛЮЧЁН. Все диалоги завершены.", reply_markup=admin_panel_buttons())
+        return
+    if data == "maintenance_off":
+        save_maintenance_mode(False)
+        await safe_send("✅ Режим технических работ ВЫКЛЮЧЁН.", reply_markup=admin_panel_buttons())
+        return
+    if data == "admin_back_main":
+        await safe_send("👑 **Панель управления владельца**\n\nВыберите действие:", parse_mode="Markdown", reply_markup=admin_panel_buttons())
+        return
 
-    # Обработка истории предупреждений (отдельными сообщениями)
+    # ========== ПРЕДУПРЕЖДЕНИЯ ==========
+    if data.startswith("warn_user_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[2])
+        context.user_data['warn_target'] = target_id
+        await safe_send("⚠️ Введите причину предупреждения:", reply_markup=cancel_btn())
+        return
     if data.startswith("warnings_history_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1640,7 +1693,6 @@ async def button_handler(update, context):
                 if not rows:
                     await safe_send("📜 История предупреждений пуста.", reply_markup=user_management_buttons(target_id))
                 else:
-                    # Удаляем исходное сообщение, чтобы не мешало
                     try:
                         await q.message.delete()
                     except:
@@ -1649,18 +1701,334 @@ async def button_handler(update, context):
                         text = f"⚠️ **Предупреждение #{warn_id}**\n📅 {warned_at.strftime('%d.%m.%Y %H:%M')}\n👮 Админ: {warned_by}\n📝 Причина: {reason}"
                         kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Снять предупреждение", callback_data=f"remove_warning_{warn_id}")]])
                         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-                    # В конце показываем кнопку назад
                     await q.message.reply_text("🔙 Вернуться к управлению пользователем", reply_markup=user_management_buttons(target_id))
         except Exception as e:
             logger.error(f"Ошибка получения предупреждений: {e}")
-            await safe_send("❌ Не удалось загрузить историю. Пожалуйста, обратитесь в техподдержку. Код: WARN_ERR01")
+            await safe_send("❌ Не удалось загрузить историю. Код: WARN_ERR01")
         finally:
             release_db_connection(conn)
         return
+    if data.startswith("reset_profile_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[2])
+        if target_id in user_profiles:
+            user_profiles[target_id]['name'] = None
+            user_profiles[target_id]['age'] = None
+            user_profiles[target_id]['gender'] = None
+            user_profiles[target_id]['type'] = None
+            save_db()
+            await safe_send(f"✅ Анкета пользователя {get_user_name(target_id)} сброшена.", reply_markup=user_management_buttons(target_id))
+        else:
+            await safe_send("❌ Пользователь не найден.")
+        return
 
-    # Остальные обработчики (статистика, список, поиск, рассылка, техработы, редактирование и т.д.) остаются без изменений.
-    # Чтобы не раздувать ответ, я их не копирую, но в полном коде они будут присутствовать.
-    # Ниже приведу полный код с изменениями.
+    # ========== ОБРАБОТКА ЗАПОЛНЕНИЯ АНКЕТЫ ПОЛЬЗОВАТЕЛЯ ==========
+    if data.startswith("gender_"):
+        gender = 'male' if data=="gender_male" else 'female'
+        context.user_data['data']['gender'] = gender
+        context.user_data['step'] = 5
+        kb = [[InlineKeyboardButton("🆘 #поддержка", callback_data="type_support")],[InlineKeyboardButton("💬 #общение", callback_data="type_comm")]]
+        await safe_send("Выберите цель:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data in ("type_support","type_comm"):
+        if context.user_data.get('step') == 5:
+            p_type = 'support' if data=="type_support" else 'communication'
+            update_profile(uid, context.user_data['data']['name'], context.user_data['data']['age'], context.user_data['data']['gender'], p_type)
+            target = context.user_data.get('target','admin')
+            if target == "admin":
+                waiting_for_forward.add(uid)
+                save_active_dialog(uid,'admin')
+            else:
+                waiting_for_support.add(uid)
+                save_active_dialog(uid,'support')
+            for k in ['step','data','awaiting','target_type']:
+                context.user_data.pop(k,None)
+            await safe_send("✅ Анкета сохранена!\n📨 Напишите сообщение", reply_markup=cancel_btn())
+        return
+
+    # ========== ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ (FULL_INFO) ==========
+    if data.startswith("full_info_"):
+        target_id = int(data.split("_")[2])
+        p = user_profiles.get(target_id,{})
+        text = f"👤 **Полная информация о пользователе**\n\n🆔 ID: `{target_id}`\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}\n👤 Имя в анкете: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}"
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info=True))
+        try:
+            await q.message.delete()
+        except:
+            pass
+        return
+
+    # ========== РЕДАКТИРОВАНИЕ ПОЛЬЗОВАТЕЛЯ (ВЛАДЕЛЕЦ) ==========
+    if data.startswith("edit_name_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        parts = data.split("_")
+        target_id = int(parts[2])
+        from_info = parts[3]=='True'
+        context.user_data['edit_target'] = target_id
+        context.user_data['edit_field'] = 'name'
+        context.user_data['edit_from_info'] = from_info
+        await safe_send("✏️ Введите новое имя:", reply_markup=cancel_btn())
+        return
+    if data.startswith("edit_age_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        parts = data.split("_")
+        target_id = int(parts[2])
+        from_info = parts[3]=='True'
+        context.user_data['edit_target'] = target_id
+        context.user_data['edit_field'] = 'age'
+        context.user_data['edit_from_info'] = from_info
+        await safe_send("📅 Введите новый возраст (от 1 до 50):", reply_markup=cancel_btn())
+        return
+    if data.startswith("edit_type_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        parts = data.split("_")
+        target_id = int(parts[2])
+        from_info = parts[3]=='True'
+        kb = [[InlineKeyboardButton("🆘 #поддержка", callback_data=f"confirm_type_{target_id}_{from_info}_support"), InlineKeyboardButton("💬 #общение", callback_data=f"confirm_type_{target_id}_{from_info}_comm")]]
+        await safe_send("Выберите новый тип:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data.startswith("edit_user_gender_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[3])
+        kb = [[InlineKeyboardButton("♂️ Мужской", callback_data=f"set_gender_{target_id}_False_male"), InlineKeyboardButton("♀️ Женский", callback_data=f"set_gender_{target_id}_False_female")]]
+        await safe_send("Выберите новый пол:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data.startswith("set_gender_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        parts = data.split("_")
+        target_id = int(parts[1])
+        from_info = parts[2]=='True'
+        new_gender = parts[3]
+        user_profiles[target_id]['gender'] = new_gender
+        save_db()
+        p = user_profiles.get(target_id,{})
+        text = f"👤 **Пользователь**\n🆔 ID: `{target_id}`\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}"
+        await safe_send(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info))
+        return
+    if data.startswith("confirm_type_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        parts = data.split("_")
+        target_id = int(parts[1])
+        from_info = parts[2]=='True'
+        new_type = 'support' if parts[3]=='support' else 'communication'
+        user_profiles[target_id]['type'] = new_type
+        save_db()
+        p = user_profiles.get(target_id,{})
+        text = f"👤 **Пользователь**\n🆔 ID: `{target_id}`\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}"
+        await safe_send(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info))
+        return
+    if data.startswith("back_to_info_"):
+        parts = data.split("_")
+        from_info = parts[3]=='True'
+        target_id = int(parts[4])
+        if from_info:
+            p = user_profiles.get(target_id,{})
+            text = f"📋 **АНКЕТА ПОЛЬЗОВАТЕЛЯ:**\n\n👤 {get_user_name(target_id)}\n✏️ Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n{'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}"
+            await safe_send(text, parse_mode="Markdown", reply_markup=info_buttons(target_id, uid==OWNER_ID))
+        else:
+            await safe_send("Возврат к списку пользователей", reply_markup=back_button())
+        return
+    if data.startswith("edit_user_name_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[3])
+        context.user_data['edit_target'] = target_id
+        context.user_data['edit_field'] = 'name'
+        context.user_data['edit_from_info'] = False
+        await safe_send("✏️ Введите новое имя:", reply_markup=cancel_btn())
+        return
+    if data.startswith("edit_user_age_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[3])
+        context.user_data['edit_target'] = target_id
+        context.user_data['edit_field'] = 'age'
+        context.user_data['edit_from_info'] = False
+        await safe_send("📅 Введите новый возраст (от 1 до 50):", reply_markup=cancel_btn())
+        return
+    if data.startswith("edit_user_type_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[3])
+        kb = [[InlineKeyboardButton("🆘 #поддержка", callback_data=f"confirm_type_{target_id}_False_support"), InlineKeyboardButton("💬 #общение", callback_data=f"confirm_type_{target_id}_False_comm")]]
+        await safe_send("Выберите новый тип:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data.startswith("send_msg_to_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[3])
+        context.user_data['send_to_user'] = target_id
+        await safe_send("📝 Введите сообщение для пользователя (оно будет отправлено с пометкой *от владельца*):", parse_mode="Markdown", reply_markup=cancel_btn())
+        return
+    if data.startswith("unban_user_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[2])
+        if target_id in banned_users:
+            banned_users.discard(target_id)
+            ban_until.pop(target_id, None)
+            save_db()
+            try:
+                await context.bot.send_message(target_id, "👑 Владелец снял с вас бан.")
+            except:
+                pass
+            await safe_send(f"✅ Пользователь {get_user_name(target_id)} разбанен.")
+            await show_user_full_info(update, context, target_id)
+        else:
+            await safe_send("❌ Пользователь не забанен.")
+        return
+    if data.startswith("unmute_user_"):
+        if uid != OWNER_ID:
+            await q.answer("❌ У вас нет прав", show_alert=True)
+            return
+        target_id = int(data.split("_")[2])
+        if target_id in muted_users:
+            muted_users.discard(target_id)
+            mute_until.pop(target_id, None)
+            save_db()
+            try:
+                await context.bot.send_message(target_id, "👑 Владелец снял с вас мут.")
+            except:
+                pass
+            await safe_send(f"✅ Мут снят с {get_user_name(target_id)}.")
+            await show_user_full_info(update, context, target_id)
+        else:
+            await safe_send("❌ Пользователь не замучен.")
+        return
+
+    # ========== ПАГИНАЦИЯ СПИСКА ПОЛЬЗОВАТЕЛЕЙ ==========
+    if data.startswith("list_page_"):
+        page = int(data.split("_")[2])
+        try:
+            await q.message.delete()
+        except:
+            pass
+        await send_list_page(q.message.chat.id, page, context)
+        return
+    if data == "user_back_main":
+        await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
+        return
+
+    # ========== ТИПЫ АНКЕТЫ АДМИНИСТРАТОРА ==========
+    if data.startswith("app_type_"):
+        await application_type_callback(update, context)
+        return
+
+    # ========== РАССЫЛКА ==========
+    if data == "confirm_broad":
+        await execute_broadcast(update, context, uid)
+        return
+    if data == "cancel_broad":
+        broadcast_data.pop(uid, None)
+        await safe_send("❌ Отменено")
+        await send_main_menu(update, context)
+        return
+
+    # ========== ГЛАВНОЕ МЕНЮ ==========
+    if data in ("admin","support"):
+        if data == "admin":
+            if is_banned(uid):
+                if uid in ban_until:
+                    remaining = (ban_until[uid]-datetime.now()).total_seconds()
+                    await safe_send(f"🚫 **Вы забанены!**\n\nОсталось: {format_time_remaining(remaining)}", parse_mode="Markdown")
+                else:
+                    await safe_send("🚫 **Вы забанены!**", parse_mode="Markdown")
+                return
+            if is_muted(uid):
+                if uid in mute_until:
+                    remaining = (mute_until[uid]-datetime.now()).total_seconds()
+                    await safe_send(f"🔇 **Вы замучены!**\n\nОсталось: {format_time_remaining(remaining)}", parse_mode="Markdown")
+                else:
+                    await safe_send("🔇 **Вы замучены!**", parse_mode="Markdown")
+                return
+        if not await check_subscription(update, context):
+            await safe_send("❌ **Для использования бота необходимо подписаться на наш канал!**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]]))
+            return
+        context.user_data['target'] = data
+        if uid not in user_profiles:
+            update_user_info(uid, q.from_user.first_name, q.from_user.username)
+        if is_profile_complete(uid):
+            if data == "admin":
+                waiting_for_forward.add(uid)
+                save_active_dialog(uid,'admin')
+            else:
+                waiting_for_support.add(uid)
+                save_active_dialog(uid,'support')
+            await safe_send("📨 Напишите сообщение", reply_markup=cancel_btn())
+        else:
+            logger.info(f"Пользователь {uid} без анкеты, запускаем заполнение")
+            context.user_data.clear()
+            context.user_data.update({'awaiting':True,'step':1,'data':{},'target_type':data})
+            await safe_send("📝 **Заполните анкету:**\n\nВведите ваше имя:", reply_markup=cancel_btn())
+        return
+    if data == "admins":
+        await start_admin_application(update, context)
+        return
+    if data == "settings":
+        if not is_profile_complete(uid):
+            await safe_send("❌ Сначала заполните анкету")
+            return
+        p = user_profiles[uid]
+        t = "🆘 #поддержка" if p['type']=='support' else "💬 #общение" if p['type']=='communication' else "❓ не выбрано"
+        await safe_send(f"📋 Анкета:\n👤 {p['name']}\n📅 {p['age']}\n{get_gender_emoji(p.get('gender'))}\n🏷️ {t}", reply_markup=settings_buttons())
+        return
+    if data in ("edit_name","edit_age"):
+        context.user_data['edit'] = data.split('_')[1]
+        await safe_send(f"✏️ Введите новое {'имя' if data=='edit_name' else 'возраст'}:", reply_markup=cancel_btn())
+        return
+    if data == "edit_type":
+        kb = [[InlineKeyboardButton("🆘 #поддержка", callback_data="ch_type_support")],[InlineKeyboardButton("💬 #общение", callback_data="ch_type_comm")]]
+        await safe_send("Выберите тип:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data in ("ch_type_support","ch_type_comm"):
+        user_profiles[uid]['type'] = 'support' if data=="ch_type_support" else 'communication'
+        save_db()
+        await safe_send("✅ Тип изменен", reply_markup=settings_buttons())
+        return
+    if data == "cancel":
+        had_msg = uid in user_has_message
+        for k in ['awaiting','step','data','target','edit','awaiting_broadcast','target_type','send_to_user','edit_target','edit_field','edit_from_info','awaiting_user_search','reply_to_applicant','warn_target','admin_application']:
+            context.user_data.pop(k, None)
+        if uid in waiting_for_forward:
+            waiting_for_forward.discard(uid)
+            remove_active_dialog(uid)
+            if had_msg:
+                await context.bot.send_message(ADMIN_GROUP_ID, f"🚫 {get_user_name(uid)} завершил диалог")
+        if uid in waiting_for_support:
+            waiting_for_support.discard(uid)
+            remove_active_dialog(uid)
+            if had_msg:
+                await context.bot.send_message(SUPPORT_GROUP_ID, f"🚫 {get_user_name(uid)} завершил диалог")
+        user_has_message.discard(uid)
+        await safe_send("❌ Отменено")
+        await send_main_menu(update, context)
+        return
+    if data == "back":
+        for k in ['awaiting','step','data','target','edit','awaiting_broadcast','target_type','send_to_user','edit_target','edit_field','edit_from_info','awaiting_user_search','reply_to_applicant','warn_target','admin_application']:
+            context.user_data.pop(k, None)
+        await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
+        return
+
+    await safe_send("❌ Неизвестная команда. Пожалуйста, обратитесь в техподдержку. Код: BUTTON_ERR01")
 
 # ==================== ВЕБ-СЕРВЕР ====================
 flask_app = Flask(__name__)
@@ -1699,9 +2067,8 @@ def run():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-    # Добавляем обработчик для edited сообщений в группах
-    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.ChatType.GROUPS, edited_reply_to))
-    # Удаляем webhook перед стартом
+    app.add_handler(MessageHandler(filters.EDITED_MESSAGE & filters.ChatType.GROUPS, edited_reply_to))
+
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
         if resp.status_code == 200:
