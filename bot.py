@@ -161,6 +161,7 @@ mute_until = {}
 user_profiles = {}
 maintenance_mode = False
 
+# ==================== РАБОТА С БАЗОЙ ДАННЫХ (ДИАЛОГИ) ====================
 def save_active_dialog(user_id, chat_type):
     conn = get_db_connection()
     try:
@@ -247,6 +248,7 @@ def remove_forwarded_message(group_id, message_id):
     finally:
         release_db_connection(conn)
 
+# ==================== ОСТАЛЬНЫЕ ФУНКЦИИ РАБОТЫ С БАЗОЙ ====================
 def load_db():
     global banned_users, muted_users, ban_until, mute_until, user_profiles
     conn = get_db_connection()
@@ -263,10 +265,10 @@ def load_db():
                     'first_name': row['first_name'],
                     'username': row['username'],
                     'registered_at': row['registered_at'].isoformat() if row['registered_at'] else None,
-                    'name': name if name and name.strip() else None,
-                    'age': age if age and age.strip() else None,
-                    'gender': gender if gender and gender.strip() else None,
-                    'type': p_type if p_type and p_type.strip() else None
+                    'name': name if name and str(name).strip() else None,
+                    'age': age if age and str(age).strip() else None,
+                    'gender': gender if gender and str(gender).strip() else None,
+                    'type': p_type if p_type and str(p_type).strip() else None
                 }
             cur.execute("SELECT user_id, until_date FROM bans")
             banned_users = set()
@@ -404,7 +406,10 @@ def format_time_remaining(seconds):
 def get_uid_from_reply(msg, fwd_dict):
     if not msg.reply_to_message:
         return None
-    return fwd_dict.get(msg.reply_to_message.message_id, (None,))[0]
+    mid = msg.reply_to_message.message_id
+    if mid in fwd_dict:
+        return fwd_dict[mid][0]
+    return None
 
 def clear_user_data(uid):
     waiting_for_forward.discard(uid)
@@ -981,19 +986,11 @@ async def stats(update, context):
         await update.message.reply_text("❌ Нет прав")
         return
     total = len(user_profiles)
-    # Правильная статистика: считаем только тех, у кого заполнены name и age
-    with_profile = 0
-    sup = 0
-    com = 0
-    for p in user_profiles.values():
-        name = p.get('name')
-        age = p.get('age')
-        if name and str(name).strip() and age and str(age).strip():
-            with_profile += 1
-            if p.get('type') == 'support':
-                sup += 1
-            elif p.get('type') == 'communication':
-                com += 1
+    # Считаем только пользователей, у которых заполнена анкета (есть name и age)
+    with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
+    # Считаем типы только у тех, у кого есть анкета
+    sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support' and p.get('name') and p.get('age'))
+    com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication' and p.get('name') and p.get('age'))
     not_chosen = with_profile - sup - com
     await update.message.reply_text(
         f"📊 **Статистика**\n\n"
@@ -1132,7 +1129,7 @@ async def show_user_full_info(update, context, target_id):
     )
     if hasattr(update, 'message') and update.message:
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=user_management_buttons(target_id))
-    else:
+    elif hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=user_management_buttons(target_id))
 
 async def send_list_page(chat_id, page, context):
@@ -1213,17 +1210,17 @@ async def profile_text(uid):
 # ==================== ОТПРАВКА МЕДИА ====================
 async def send_media_to_user(bot, user_id, message):
     if message.text:
-        return await bot.send_message(user_id, message.text, parse_mode=message.parse_mode)
+        return await bot.send_message(user_id, message.text, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
     elif message.photo:
-        return await bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption, parse_mode=message.parse_mode)
+        return await bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
     elif message.video:
-        return await bot.send_video(user_id, message.video.file_id, caption=message.caption, parse_mode=message.parse_mode)
+        return await bot.send_video(user_id, message.video.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
     elif message.animation:
-        return await bot.send_animation(user_id, message.animation.file_id, caption=message.caption, parse_mode=message.parse_mode)
+        return await bot.send_animation(user_id, message.animation.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
     elif message.voice:
         return await bot.send_voice(user_id, message.voice.file_id, caption=message.caption)
     elif message.document:
-        return await bot.send_document(user_id, message.document.file_id, caption=message.caption, parse_mode=message.parse_mode)
+        return await bot.send_document(user_id, message.document.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
     elif message.sticker:
         return await bot.send_sticker(user_id, message.sticker.file_id)
     elif message.video_note:
@@ -1413,9 +1410,9 @@ async def reply_to(update, context):
         uid, mid = rep[msg.message_id]
         try:
             if msg.text:
-                await context.bot.edit_message_text(uid, mid, text=msg.text, parse_mode=msg.parse_mode)
+                await context.bot.edit_message_text(uid, mid, text=msg.text, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
             elif msg.caption:
-                await context.bot.edit_message_caption(uid, mid, caption=msg.caption, parse_mode=msg.parse_mode)
+                await context.bot.edit_message_caption(uid, mid, caption=msg.caption, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
         except Exception as e:
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err:
@@ -1456,18 +1453,9 @@ async def button_handler(update, context):
     # Админ-панель
     if data == "admin_stats":
         total = len(user_profiles)
-        with_profile = 0
-        sup = 0
-        com = 0
-        for p in user_profiles.values():
-            name = p.get('name')
-            age = p.get('age')
-            if name and str(name).strip() and age and str(age).strip():
-                with_profile += 1
-                if p.get('type') == 'support':
-                    sup += 1
-                elif p.get('type') == 'communication':
-                    com += 1
+        with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
+        sup = sum(1 for p in user_profiles.values() if p.get('type')=='support' and p.get('name') and p.get('age'))
+        com = sum(1 for p in user_profiles.values() if p.get('type')=='communication' and p.get('name') and p.get('age'))
         not_chosen = with_profile - sup - com
         await safe_send(
             f"📊 **Статистика**\n\n👥 Всего: `{total}`\n✅ С анкетой: `{with_profile}`\n🆘 Поддержка: `{sup}`\n💬 Общение: `{com}`\n❓ Не выбрали: `{not_chosen}`",
@@ -1550,7 +1538,7 @@ async def button_handler(update, context):
         else:
             await safe_send("❌ Пользователь не найден.")
         return
-    # Стандартные обработчики
+    # Стандартные обработчики (сокращённо)
     if data.startswith("gender_"):
         gender = 'male' if data=="gender_male" else 'female'
         context.user_data['data']['gender'] = gender
@@ -1890,44 +1878,53 @@ async def button_handler(update, context):
         return
     await safe_send("❌ Неизвестная команда. Код: BUTTON_ERR01")
 
-# ==================== ВЕБ-СЕРВЕР ====================
+# ==================== ВЕБ-СЕРВЕР ДЛЯ HEALTHCHECK ====================
 flask_app = Flask(__name__)
+
 @flask_app.route('/')
 @flask_app.route('/health')
 def health():
     return "OK", 200
+
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port, debug=False)
 
+# ==================== ЗАПУСК ====================
 def run():
     init_db()
     load_db()
     load_active_dialogs()
     load_forwarded_messages()
     load_maintenance_mode()
+    
     global app
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("stop", stop, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("next", next_op, filters=filters.ChatType.PRIVATE))
+
     app.add_handler(CommandHandler("ban", ban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unban", unban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("mute", mute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unmute", unmute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("info", info_command, filters=filters.ChatType.GROUPS))
+
     app.add_handler(CommandHandler("stats", stats, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("maintenance", maintenance_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("admin_panel", admin_panel, filters=filters.ChatType.PRIVATE))
+
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-    # Удаляем webhook перед стартом
+
+    # Удаляем webhook перед стартом (избегаем конфликта 409)
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
         if resp.status_code == 200:
@@ -1937,7 +1934,11 @@ def run():
         time.sleep(2)
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
+
+    # Запускаем Flask для healthcheck
     threading.Thread(target=run_web_server, daemon=True).start()
+    
+    # Запускаем polling (надёжнее для Render, если webhook конфликтует)
     logger.info("Запуск polling...")
     app.run_polling()
 
