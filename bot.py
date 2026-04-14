@@ -2067,7 +2067,8 @@ def run():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-    app.add_handler(MessageHandler(filters.EDITED_MESSAGE & filters.ChatType.GROUPS, edited_reply_to))
+    # Исправленная строка:
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.ChatType.GROUPS, edited_reply_to))
 
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
