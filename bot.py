@@ -1502,30 +1502,35 @@ async def reply_to(update, context):
         await msg.reply_text("📝 Внутреннее сообщение администратора (не отправлено пользователю)")
         return
     cid, rid = msg.chat.id, msg.reply_to_message.message_id
+    
+    # Ответ на анкету (с кнопкой)
     if cid == ADMIN_APPLICATION_GROUP_ID and rid in application_messages:
         user_id = application_messages[rid]
         if user_id:
             try:
                 await context.bot.send_message(user_id, f"📨 *Ответ на вашу анкету:*\n\n{msg.text}", parse_mode="Markdown")
                 await msg.reply_text("✅ Ответ отправлен пользователю.")
+                # Отправляем кнопку "Ответить" только для анкеты
+                await add_reply_button_to_user(user_id, 'admin', context, original_message_id=None)
             except Exception as e:
                 logger.error(f"Ошибка ответа на анкету: {e}")
-                await msg.reply_text(f"❌ Не удалось отправить ответ. Пожалуйста, обратитесь в техподдержку. Код: APP_ERR05")
+                await msg.reply_text(f"❌ Не удалось отправить ответ. Код: APP_ERR05")
         return
+
+    # Обычные диалоги (админ и техподдержка)
     if cid == ADMIN_GROUP_ID and rid in forwarded:
         fwd, rep = forwarded, admin_replies
-        chat_type = 'admin'
     elif cid == SUPPORT_GROUP_ID and rid in support_forwarded:
         fwd, rep = support_forwarded, support_admin_replies
-        chat_type = 'support'
     else:
         return
+
     uid, _ = fwd[rid]
-    if not msg.edit_date:
+    if not msg.edit_date:  # Новое сообщение
         try:
             sent = await send_media_to_user(context.bot, uid, msg)
-            rep[msg.message_id] = (uid, sent.message_id)
-            await add_reply_button_to_user(uid, chat_type, context, original_message_id=sent.message_id)
+            rep[msg.message_id] = (uid, sent.message_id)  # сохраняем для редактирования
+            # Кнопку НЕ отправляем
         except Exception as e:
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err:
@@ -1534,14 +1539,17 @@ async def reply_to(update, context):
             else:
                 if "not enough rights" not in err and "message is not modified" not in err:
                     logger.error(f"Ошибка отправки ответа: {e}")
-                    await msg.reply_text("❌ Не удалось доставить сообщение пользователю. Пожалуйста, обратитесь в техподдержку. Код: REP_ERR06")
-    elif msg.edit_date and msg.message_id in rep:
+                    await msg.reply_text("❌ Не удалось доставить сообщение пользователю. Код: REP_ERR06")
+    elif msg.edit_date and msg.message_id in rep:  # Редактирование
         uid, mid = rep[msg.message_id]
+        logger.info(f"Редактирование: найдено сообщение uid={uid}, mid={mid}")
         try:
             if msg.text:
                 await context.bot.edit_message_text(uid, mid, text=msg.text, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
+                logger.info(f"Текст сообщения {mid} обновлён")
             elif msg.caption:
                 await context.bot.edit_message_caption(uid, mid, caption=msg.caption, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
+                logger.info(f"Подпись сообщения {mid} обновлена")
         except Exception as e:
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err:
