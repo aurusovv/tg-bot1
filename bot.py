@@ -106,6 +106,17 @@ def init_db():
                     warned_at TIMESTAMP DEFAULT NOW()
                 )
             """)
+            # Таблица для хранения связей сообщений админ -> пользователь
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS admin_replies (
+                    group_id BIGINT NOT NULL,
+                    admin_msg_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    user_msg_id BIGINT NOT NULL,
+                    chat_type TEXT NOT NULL,
+                    PRIMARY KEY (group_id, admin_msg_id)
+                )
+            """)
             # Миграция для старых таблиц (если колонки id нет)
             try:
                 cur.execute("ALTER TABLE warnings ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY")
@@ -251,6 +262,39 @@ def remove_forwarded_message(group_id, message_id):
             conn.commit()
     except Exception as e:
         logger.error(f"Ошибка удаления пересланного сообщения: {e}")
+    finally:
+        release_db_connection(conn)
+
+# ==================== НОВЫЕ ФУНКЦИИ ДЛЯ ХРАНЕНИЯ ОТВЕТОВ ====================
+def save_admin_reply(group_id, admin_msg_id, user_id, user_msg_id, chat_type):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO admin_replies (group_id, admin_msg_id, user_id, user_msg_id, chat_type)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (group_id, admin_msg_id) DO UPDATE SET user_msg_id = EXCLUDED.user_msg_id
+            """, (group_id, admin_msg_id, user_id, user_msg_id, chat_type))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка сохранения ответа: {e}")
+    finally:
+        release_db_connection(conn)
+
+def load_admin_replies():
+    global admin_replies, support_admin_replies
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT group_id, admin_msg_id, user_id, user_msg_id, chat_type FROM admin_replies")
+            for gid, admin_mid, uid, user_mid, ct in cur.fetchall():
+                if ct == 'admin':
+                    admin_replies[admin_mid] = (uid, user_mid)
+                else:
+                    support_admin_replies[admin_mid] = (uid, user_mid)
+        logger.info(f"Загружено ответов: admin={len(admin_replies)}, support={len(support_admin_replies)}")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки ответов: {e}")
     finally:
         release_db_connection(conn)
 
@@ -674,7 +718,7 @@ async def application_type_callback(update, context):
 
 # ==================== ФУНКЦИИ ДЛЯ КНОПКИ "ОТВЕТИТЬ" ПОЛЬЗОВАТЕЛЯ ====================
 async def add_reply_button_to_user(user_id, chat_type, context, original_message_id=None):
-    """Отправляет пользователю сообщение с кнопкой 'Ответить', которая вернёт его в диалог"""
+    """Отправляет пользователю сообщение с кнопкой 'Ответить', которая вернёт его в диалог (только для анкет)"""
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_{chat_type}_{original_message_id}")]])
     await context.bot.send_message(user_id, "Вы можете ответить администратору, нажав на кнопку ниже:", reply_markup=keyboard)
 
@@ -683,13 +727,12 @@ async def handle_user_reply_button(update, context):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    data = query.data  # формат: reply_to_admin_<msg_id> или reply_to_support_<msg_id>
+    data = query.data
     parts = data.split("_")
     if len(parts) < 3:
         await query.edit_message_text("❌ Ошибка. Попробуйте снова.")
         return
-    chat_type = parts[2]  # 'admin' или 'support'
-    # Завершаем текущий диалог пользователя, если он есть
+    chat_type = parts[2]
     if user_id in waiting_for_forward:
         waiting_for_forward.discard(user_id)
         remove_active_dialog(user_id)
@@ -698,7 +741,6 @@ async def handle_user_reply_button(update, context):
         waiting_for_support.discard(user_id)
         remove_active_dialog(user_id)
         await context.bot.send_message(SUPPORT_GROUP_ID, f"🔄 {get_user_name(user_id)} завершил старый диалог и начал новый.")
-    # Добавляем пользователя в новый диалог
     if chat_type == 'admin':
         waiting_for_forward.add(user_id)
         save_active_dialog(user_id, 'admin')
@@ -707,7 +749,6 @@ async def handle_user_reply_button(update, context):
         waiting_for_support.add(user_id)
         save_active_dialog(user_id, 'support')
         await query.edit_message_text("✅ Вы снова в очереди на ответ в техподдержку. Напишите ваше сообщение.")
-    # Убираем клавиатуру у сообщения, на котором нажали кнопку
     try:
         await query.message.edit_reply_markup(reply_markup=None)
     except:
@@ -1520,8 +1561,10 @@ async def reply_to(update, context):
     # Обычные диалоги (админ и техподдержка)
     if cid == ADMIN_GROUP_ID and rid in forwarded:
         fwd, rep = forwarded, admin_replies
+        chat_type = 'admin'
     elif cid == SUPPORT_GROUP_ID and rid in support_forwarded:
         fwd, rep = support_forwarded, support_admin_replies
+        chat_type = 'support'
     else:
         return
 
@@ -1529,8 +1572,9 @@ async def reply_to(update, context):
     if not msg.edit_date:  # Новое сообщение
         try:
             sent = await send_media_to_user(context.bot, uid, msg)
-            rep[msg.message_id] = (uid, sent.message_id)  # сохраняем для редактирования
-            # Кнопку НЕ отправляем
+            rep[msg.message_id] = (uid, sent.message_id)
+            # Сохраняем связь в БД
+            save_admin_reply(cid, msg.message_id, uid, sent.message_id, chat_type)
         except Exception as e:
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err:
@@ -2053,6 +2097,7 @@ def run():
     load_db()
     load_active_dialogs()
     load_forwarded_messages()
+    load_admin_replies()  # загружаем сохранённые ответы
     load_maintenance_mode()
     global app
     app = Application.builder().token(TOKEN).build()
@@ -2075,7 +2120,6 @@ def run():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-    # Исправленная строка:
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.ChatType.GROUPS, edited_reply_to))
 
     try:
