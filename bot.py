@@ -161,7 +161,7 @@ mute_until = {}
 user_profiles = {}
 maintenance_mode = False
 
-# ==================== РАБОТА С БАЗОЙ ДАННЫХ (ДИАЛОГИ) ====================
+# ==================== РАБОТА С БАЗОЙ (ДИАЛОГИ) ====================
 def save_active_dialog(user_id, chat_type):
     conn = get_db_connection()
     try:
@@ -265,10 +265,10 @@ def load_db():
                     'first_name': row['first_name'],
                     'username': row['username'],
                     'registered_at': row['registered_at'].isoformat() if row['registered_at'] else None,
-                    'name': name if name and str(name).strip() else None,
-                    'age': age if age and str(age).strip() else None,
-                    'gender': gender if gender and str(gender).strip() else None,
-                    'type': p_type if p_type and str(p_type).strip() else None
+                    'name': name if name and name.strip() else None,
+                    'age': age if age and age.strip() else None,
+                    'gender': gender if gender and gender.strip() else None,
+                    'type': p_type if p_type and p_type.strip() else None
                 }
             cur.execute("SELECT user_id, until_date FROM bans")
             banned_users = set()
@@ -406,10 +406,7 @@ def format_time_remaining(seconds):
 def get_uid_from_reply(msg, fwd_dict):
     if not msg.reply_to_message:
         return None
-    mid = msg.reply_to_message.message_id
-    if mid in fwd_dict:
-        return fwd_dict[mid][0]
-    return None
+    return fwd_dict.get(msg.reply_to_message.message_id, (None,))[0]
 
 def clear_user_data(uid):
     waiting_for_forward.discard(uid)
@@ -477,6 +474,7 @@ def admin_panel_buttons():
         [InlineKeyboardButton("🔍 Поиск пользователя", callback_data="admin_search_user")],
         [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🛠 Тех. работы", callback_data="admin_maintenance")],
+        [InlineKeyboardButton("ℹ️ Помощь", callback_data="admin_help")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back")]
     ])
 
@@ -621,11 +619,16 @@ async def finish_application(update, context):
             sent = await context.bot.send_message(
                 chat_id=ADMIN_APPLICATION_GROUP_ID,
                 text=part,
-                parse_mode=None,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_app_{sent.message_id}")]])
+                parse_mode=None
             )
             if idx == 0:
                 application_messages[sent.message_id] = user_id
+                # Добавляем кнопку ответа на первое сообщение
+                await context.bot.edit_message_reply_markup(
+                    chat_id=ADMIN_APPLICATION_GROUP_ID,
+                    message_id=sent.message_id,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_app_{sent.message_id}")]])
+                )
     except Exception as e:
         logger.error(f"Ошибка отправки анкеты: {e}")
         try:
@@ -635,12 +638,16 @@ async def finish_application(update, context):
             sent = await context.bot.send_document(
                 chat_id=ADMIN_APPLICATION_GROUP_ID,
                 document=file,
-                caption=f"📝 Анкета кандидата {first_name} (@{username})",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_app_{sent.message_id}")]])
+                caption=f"📝 Анкета кандидата {first_name} (@{username})"
             )
             application_messages[sent.message_id] = user_id
+            await context.bot.edit_message_reply_markup(
+                chat_id=ADMIN_APPLICATION_GROUP_ID,
+                message_id=sent.message_id,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_app_{sent.message_id}")]])
+            )
         except Exception as e2:
-            await update.message.reply_text("❌ Ошибка при отправке анкеты. Код: APP_ERR01")
+            await update.message.reply_text("❌ Ошибка при отправке анкеты. Пожалуйста, сообщите об ошибке в техподдержку. Код: APP_ERR01")
             del context.user_data['admin_application']
             return
     await update.message.reply_text("✅ Анкета отправлена на проверку. Ожидайте ответа (до 48 часов).")
@@ -723,29 +730,29 @@ async def start(update, context):
     user = update.effective_user
     update_user_info(user.id, user.first_name, user.username)
     if maintenance_mode and user.id != OWNER_ID:
-        await update.message.reply_text("🛠 Бот на тех. работах. Зайдите позже. Код: MAINT001")
+        await update.message.reply_text("🛠 Бот на технических работах. Пожалуйста, зайдите позже. Код: MAINT001")
         return
     if not await check_subscription(update, context):
         await update.message.reply_text(
-            "❌ Подпишитесь на канал!\n\nПодпишитесь и нажмите /start снова.",
+            "❌ Для использования бота необходимо подписаться на наш канал!\n\nПодпишитесь и нажмите /start снова.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]])
         )
         return
     await send_main_menu(update, context)
 
 async def help_command(update, context):
-    await update.message.reply_text("Недоступно", parse_mode="Markdown")
+    await update.message.reply_text("Недоступно")
 
 async def settings(update, context):
     uid = update.message.chat_id
     if maintenance_mode and update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("🛠 Тех. работы. Код: MAINT001")
+        await update.message.reply_text("🛠 Технические работы. Код: MAINT001")
         return
     if not await check_subscription(update, context):
         await update.message.reply_text("❌ Подпишитесь на канал!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]]))
         return
     if not is_profile_complete(uid):
-        await update.message.reply_text("❌ Настройки недоступны, анкета не создана.\nЗаполните её через 'Написать админу'")
+        await update.message.reply_text("❌ Настройки недоступны, ваша анкета ещё не создана.\nЗаполните её через 'Написать админу'")
         return
     p = user_profiles[uid]
     t = "🆘 #поддержка" if p['type']=='support' else "💬 #общение" if p['type']=='communication' else "❓ не выбрано"
@@ -758,12 +765,12 @@ async def stop(update, context):
     uid = update.message.chat_id
     if context.user_data.get('admin_application'):
         del context.user_data['admin_application']
-        await update.message.reply_text("❌ Заполнение анкеты админа отменено.")
+        await update.message.reply_text("❌ Заполнение анкеты администратора отменено.")
         return
     in_f = uid in waiting_for_forward
     in_s = uid in waiting_for_support
     if not in_f and not in_s:
-        await update.message.reply_text("❌ Вы не в режиме общения")
+        await update.message.reply_text("❌ Вы не находитесь в режиме общения")
         return
     name = get_user_name(uid)
     had = uid in user_has_message
@@ -784,10 +791,10 @@ async def stop(update, context):
 async def next_op(update, context):
     uid = update.message.chat_id
     if uid in waiting_for_forward:
-        await context.bot.send_message(ADMIN_GROUP_ID, f"🔄 {get_user_name(uid)} хочет сменить администратора")
+        await context.bot.send_message(ADMIN_GROUP_ID, f"🔄 Пользователь {get_user_name(uid)} хочет сменить администратора")
         await update.message.reply_text("🔄 Смена администратора. Первый освободившийся ответит.")
     elif uid in waiting_for_support:
-        await update.message.reply_text("❌ /next недоступна в техподдержке")
+        await update.message.reply_text("❌ Команда /next недоступна в техподдержке")
     else:
         await update.message.reply_text("❌ Вы не в режиме общения")
 
@@ -801,7 +808,7 @@ async def ban(update, context):
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается. Код: BAN_ERR02")
+        return await update.message.reply_text("❌ Эта группа не поддерживается. Код: BAN_ERR02")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
         return await update.message.reply_text("❌ Не удалось определить пользователя. Код: BAN_ERR03")
@@ -838,7 +845,7 @@ async def unban(update, context):
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается. Код: UNBAN_ERR02")
+        return await update.message.reply_text("❌ Эта группа не поддерживается. Код: UNBAN_ERR02")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
         return await update.message.reply_text("❌ Не удалось определить пользователя. Код: UNBAN_ERR03")
@@ -862,7 +869,7 @@ async def mute(update, context):
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается. Код: MUTE_ERR02")
+        return await update.message.reply_text("❌ Эта группа не поддерживается. Код: MUTE_ERR02")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
         return await update.message.reply_text("❌ Не удалось определить пользователя. Код: MUTE_ERR03")
@@ -892,7 +899,7 @@ async def unmute(update, context):
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается. Код: UNMUTE_ERR02")
+        return await update.message.reply_text("❌ Эта группа не поддерживается. Код: UNMUTE_ERR02")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
         return await update.message.reply_text("❌ Не удалось определить пользователя. Код: UNMUTE_ERR03")
@@ -909,7 +916,7 @@ async def unmute(update, context):
 
 async def info_command(update, context):
     if update.message.chat.type not in ["group","supergroup"]:
-        return await update.message.reply_text("❌ /info только в группах")
+        return await update.message.reply_text("❌ Команда /info доступна только в группах")
     if not update.message.reply_to_message:
         return await update.message.reply_text("❌ Ответьте на сообщение пользователя")
     cid = update.effective_chat.id
@@ -918,7 +925,7 @@ async def info_command(update, context):
     elif cid == SUPPORT_GROUP_ID:
         fwd = support_forwarded
     else:
-        return await update.message.reply_text("❌ Группа не поддерживается")
+        return await update.message.reply_text("❌ Эта группа не поддерживается")
     uid = get_uid_from_reply(update.message, fwd)
     if not uid:
         return await update.message.reply_text("❌ Не удалось определить пользователя")
@@ -930,9 +937,24 @@ async def info_command(update, context):
 # ==================== КОМАНДЫ ВЛАДЕЛЬЦА ====================
 async def admin_panel(update, context):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ Нет прав")
+        await update.message.reply_text("❌ У вас нет прав на эту команду")
         return
     await update.message.reply_text("👑 **Панель управления владельца**\n\nВыберите действие:", parse_mode="Markdown", reply_markup=admin_panel_buttons())
+
+async def admin_help(update, context):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ Нет прав")
+        return
+    help_text = (
+        "👑 **Панель владельца – справка**\n\n"
+        "• Статистика – показывает общее количество пользователей, типы обращений.\n"
+        "• Список пользователей – пагинированный список всех зарегистрированных пользователей.\n"
+        "• Поиск пользователя – поиск по ID или @username.\n"
+        "• Рассылка – отправка сообщения всем пользователям (поддерживаются фото, видео и др.).\n"
+        "• Тех. работы – включение/отключение режима обслуживания (диалоги завершаются).\n\n"
+        "При возникновении ошибок обращайтесь в техподдержку."
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=admin_panel_buttons())
 
 async def clear_all_dialogs(context):
     global waiting_for_forward, waiting_for_support, user_has_message, profile_sent
@@ -940,7 +962,7 @@ async def clear_all_dialogs(context):
     sup_users = list(waiting_for_support)
     for uid in fwd_users:
         try:
-            await context.bot.send_message(uid, "🛠 Бот перешёл в режим тех. работ. Все диалоги завершены.")
+            await context.bot.send_message(uid, "🛠 Бот перешёл в режим технических работ. Все диалоги завершены.")
         except:
             pass
         waiting_for_forward.discard(uid)
@@ -949,7 +971,7 @@ async def clear_all_dialogs(context):
         profile_sent.discard(uid)
     for uid in sup_users:
         try:
-            await context.bot.send_message(uid, "🛠 Бот перешёл в режим тех. работ. Все диалоги завершены.")
+            await context.bot.send_message(uid, "🛠 Бот перешёл в режим технических работ. Все диалоги завершены.")
         except:
             pass
         waiting_for_support.discard(uid)
@@ -957,14 +979,14 @@ async def clear_all_dialogs(context):
         user_has_message.discard(uid)
         profile_sent.discard(uid)
     if fwd_users:
-        await context.bot.send_message(ADMIN_GROUP_ID, "🔧 Режим тех. работ ВКЛЮЧЁН. Диалоги с администраторами завершены.")
+        await context.bot.send_message(ADMIN_GROUP_ID, "🔧 Режим технических работ ВКЛЮЧЁН. Все диалоги с администраторами завершены.")
     if sup_users:
-        await context.bot.send_message(SUPPORT_GROUP_ID, "🔧 Режим тех. работ ВКЛЮЧЁН. Диалоги с техподдержкой завершены.")
+        await context.bot.send_message(SUPPORT_GROUP_ID, "🔧 Режим технических работ ВКЛЮЧЁН. Все диалоги с техподдержкой завершены.")
     logger.info(f"Завершено диалогов: admin={len(fwd_users)}, support={len(sup_users)}")
 
 async def maintenance_command(update, context):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ Нет прав")
+        await update.message.reply_text("❌ У вас нет прав на эту команду")
         return
     if not context.args:
         await update.message.reply_text("Использование: /maintenance on|off")
@@ -974,28 +996,24 @@ async def maintenance_command(update, context):
         if not maintenance_mode:
             await clear_all_dialogs(context)
         save_maintenance_mode(True)
-        await update.message.reply_text("🛠 Режим тех. работ ВКЛЮЧЁН. Диалоги завершены.")
+        await update.message.reply_text("🛠 Режим технических работ ВКЛЮЧЁН. Обычные пользователи не могут использовать бота. Все диалоги завершены.")
     elif arg == "off":
         save_maintenance_mode(False)
-        await update.message.reply_text("✅ Режим тех. работ ВЫКЛЮЧЁН.")
+        await update.message.reply_text("✅ Режим технических работ ВЫКЛЮЧЁН. Бот работает в штатном режиме.")
     else:
         await update.message.reply_text("Неверный аргумент. Используйте on или off")
 
 async def stats(update, context):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ Нет прав")
+        await update.message.reply_text("❌ У вас нет прав на эту команду")
         return
     total = len(user_profiles)
-    # Считаем только пользователей, у которых заполнена анкета (есть name и age)
-    with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
-    # Считаем типы только у тех, у кого есть анкета
-    sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support' and p.get('name') and p.get('age'))
-    com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication' and p.get('name') and p.get('age'))
-    not_chosen = with_profile - sup - com
+    sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support')
+    com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication')
+    not_chosen = total - sup - com
     await update.message.reply_text(
         f"📊 **Статистика**\n\n"
-        f"👥 Всего в базе: `{total}`\n"
-        f"✅ С анкетой: `{with_profile}`\n"
+        f"👥 Всего пользователей: `{total}`\n"
         f"🆘 Поддержка: `{sup}`\n"
         f"💬 Общение: `{com}`\n"
         f"❓ Не выбрали тип: `{not_chosen}`",
@@ -1004,12 +1022,15 @@ async def stats(update, context):
 
 async def broadcast(update, context):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ Нет прав")
+        await update.message.reply_text("❌ У вас нет прав на эту команду")
         return
     if update.message.chat.type != "private":
         return
     context.user_data['awaiting_broadcast'] = True
-    await update.message.reply_text("📢 **РАССЫЛКА**\n\nОтправьте сообщение для рассылки.\n\nПоддерживаются: текст, фото, видео, GIF, голосовые, документы.", parse_mode="Markdown", reply_markup=cancel_btn())
+    await update.message.reply_text(
+        "📢 **РАССЫЛКА**\n\nОтправьте сообщение для рассылки.\n\nПоддерживаются: текст, фото, видео, GIF, голосовые, документы.",
+        parse_mode="Markdown", reply_markup=cancel_btn()
+    )
 
 async def save_broadcast_data(update, context, uid):
     msg = update.message
@@ -1026,9 +1047,9 @@ async def save_broadcast_data(update, context, uid):
     elif msg.document:
         broadcast_data[uid] = {'type':'document','content':msg.document.file_id,'caption':msg.caption,'parse_mode':msg.parse_mode}
     else:
-        await update.message.reply_text("❌ Тип не поддерживается. Код: BC_ERR01")
+        await update.message.reply_text("❌ Этот тип сообщения не поддерживается. Код: BC_ERR01")
         return
-    await update.message.reply_text("📢 **ПРЕВЬЮ:**", parse_mode="Markdown")
+    await update.message.reply_text("📢 **ПРЕВЬЮ РАССЫЛКИ:**", parse_mode="Markdown")
     if broadcast_data[uid]['type']=='text':
         await update.message.reply_text(broadcast_data[uid]['content'], parse_mode=broadcast_data[uid].get('parse_mode','HTML'))
     elif broadcast_data[uid]['type']=='photo':
@@ -1081,7 +1102,7 @@ async def execute_broadcast(update, context, uid):
 
 async def list_users(update, context):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ Нет прав")
+        await update.message.reply_text("❌ У вас нет прав на эту команду")
         return
     page = 1
     if context.args and context.args[0].isdigit():
@@ -1090,10 +1111,13 @@ async def list_users(update, context):
 
 async def user_info(update, context):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ Нет прав")
+        await update.message.reply_text("❌ У вас нет прав на эту команду")
         return
     if not context.args:
-        await update.message.reply_text("🔍 **Поиск пользователя**\nИспользование: /user_info <id или @username>", parse_mode="Markdown")
+        await update.message.reply_text(
+            "🔍 **Поиск пользователя**\n\nИспользование: `/user_info <id или @username>`\n\nПримеры:\n`/user_info 123456789`\n`/user_info @username`",
+            parse_mode="Markdown"
+        )
         return
     query = context.args[0]
     if query.isdigit():
@@ -1101,7 +1125,7 @@ async def user_info(update, context):
         if target in user_profiles:
             await show_user_full_info(update, context, target)
         else:
-            await update.message.reply_text(f"❌ Пользователь с ID {target} не найден")
+            await update.message.reply_text(f"❌ Пользователь с ID `{target}` не найден", parse_mode="Markdown")
         return
     username = query.lstrip('@').lower()
     found = None
@@ -1112,17 +1136,17 @@ async def user_info(update, context):
     if found:
         await show_user_full_info(update, context, found)
     else:
-        await update.message.reply_text(f"❌ Пользователь @{username} не найден")
+        await update.message.reply_text(f"❌ Пользователь с username `@{username}` не найден", parse_mode="Markdown")
 
 async def show_user_full_info(update, context, target_id):
     p = user_profiles.get(target_id, {})
     text = (
-        f"👤 **Полная информация**\n\n"
+        f"👤 **Полная информация о пользователе**\n\n"
         f"🆔 ID: `{target_id}`\n"
         f"📝 First name: {p.get('first_name','не указан')}\n"
         f"🔖 Username: @{p.get('username','нет')}\n"
         f"📅 Зарегистрирован: {p.get('registered_at','неизвестно')}\n"
-        f"👤 Имя: {p.get('name','не указано')}\n"
+        f"👤 Имя в анкете: {p.get('name','не указано')}\n"
         f"📅 Возраст: {p.get('age','не указан')}\n"
         f"{get_gender_emoji(p.get('gender'))}\n"
         f"🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}"
@@ -1137,13 +1161,13 @@ async def send_list_page(chat_id, page, context):
     users_list = list(user_profiles.items())
     total = len(users_list)
     if total == 0:
-        await context.bot.send_message(chat_id, "📋 Пользователи\n\nНет зарегистрированных пользователей.")
+        await context.bot.send_message(chat_id, "📋 **Пользователи**\n\nНет зарегистрированных пользователей.", parse_mode="Markdown")
         return
     total_pages = max(1, (total + users_per_page - 1)//users_per_page)
     page = max(1, min(page, total_pages))
     start = (page-1)*users_per_page
     end = min(start+users_per_page, total)
-    text = f"📋 Пользователи (стр. {page}/{total_pages})\n\n"
+    text = f"📋 **Пользователи (стр. {page}/{total_pages})**\n\n"
     for uid, data in users_list[start:end]:
         name = data.get('name','❌')
         age = data.get('age','❌')
@@ -1151,9 +1175,9 @@ async def send_list_page(chat_id, page, context):
         p_type = "🆘" if data.get('type')=='support' else "💬" if data.get('type')=='communication' else "❓"
         username = data.get('username')
         if username:
-            text += f"🆔 {uid} | @{username}\n"
+            text += f"🆔 `{uid}` | @{username}\n"
         else:
-            text += f"🆔 {uid}\n"
+            text += f"🆔 `{uid}`\n"
         text += f"👤 {name} | {age} | {gender} | {p_type}\n\n"
     keyboard = []
     if page > 1:
@@ -1161,7 +1185,7 @@ async def send_list_page(chat_id, page, context):
     if page < total_pages:
         keyboard.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"list_page_{page+1}"))
     reply_markup = InlineKeyboardMarkup([keyboard]) if keyboard else None
-    await context.bot.send_message(chat_id, text, reply_markup=reply_markup)
+    await context.bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
 
 # ==================== АНКЕТА ПОЛЬЗОВАТЕЛЯ ====================
 async def save_profile(update, context):
@@ -1177,16 +1201,16 @@ async def save_profile(update, context):
         await update.message.reply_text("📝 Введите возраст (от 1 до 50 лет):", reply_markup=cancel_btn())
     elif step == 2:
         if not text.isdigit():
-            await update.message.reply_text("❌ Введите цифры!", reply_markup=cancel_btn())
+            await update.message.reply_text("❌ Пожалуйста, введите цифры!", reply_markup=cancel_btn())
             return
         age = int(text)
         if age < 1 or age > 50:
-            await update.message.reply_text("❌ Корректный возраст от 1 до 50", reply_markup=cancel_btn())
+            await update.message.reply_text("❌ Пожалуйста, укажите корректный возраст (от 1 до 50)", reply_markup=cancel_btn())
             return
         context.user_data['data']['age'] = text
         context.user_data['step'] = 3
         kb = [[InlineKeyboardButton("♂️ Мужской", callback_data="gender_male")],[InlineKeyboardButton("♀️ Женский", callback_data="gender_female")]]
-        await update.message.reply_text("👤 Выберите пол:", reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text("👤 Выберите ваш пол:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def profile_text(uid):
     p = user_profiles.get(uid, {})
@@ -1210,17 +1234,17 @@ async def profile_text(uid):
 # ==================== ОТПРАВКА МЕДИА ====================
 async def send_media_to_user(bot, user_id, message):
     if message.text:
-        return await bot.send_message(user_id, message.text, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_message(user_id, message.text, parse_mode=message.parse_mode)
     elif message.photo:
-        return await bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption, parse_mode=message.parse_mode)
     elif message.video:
-        return await bot.send_video(user_id, message.video.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_video(user_id, message.video.file_id, caption=message.caption, parse_mode=message.parse_mode)
     elif message.animation:
-        return await bot.send_animation(user_id, message.animation.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_animation(user_id, message.animation.file_id, caption=message.caption, parse_mode=message.parse_mode)
     elif message.voice:
         return await bot.send_voice(user_id, message.voice.file_id, caption=message.caption)
     elif message.document:
-        return await bot.send_document(user_id, message.document.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_document(user_id, message.document.file_id, caption=message.caption, parse_mode=message.parse_mode)
     elif message.sticker:
         return await bot.send_sticker(user_id, message.sticker.file_id)
     elif message.video_note:
@@ -1239,7 +1263,11 @@ async def forward_msg(update, context):
         await process_application_answer(update, context)
         return
     if not await check_subscription(update, context):
-        await update.message.reply_text("❌ Подпишитесь на канал!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]]))
+        await update.message.reply_text(
+            "❌ **Для использования бота необходимо подписаться на наш канал!**\n\nПодпишитесь и нажмите /start снова.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]])
+        )
         return
     if context.user_data.get('awaiting_broadcast'):
         context.user_data['awaiting_broadcast'] = False
@@ -1250,10 +1278,10 @@ async def forward_msg(update, context):
         msg = update.message
         try:
             await context.bot.send_message(target, f"👑 *Сообщение от владельца:*\n\n{msg.text}", parse_mode="Markdown")
-            await update.message.reply_text("✅ Отправлено")
+            await update.message.reply_text("✅ Сообщение отправлено пользователю")
         except Exception as e:
-            logger.error(f"Ошибка отправки от владельца: {e}")
-            await update.message.reply_text("❌ Не удалось отправить. Код: OWN_ERR02")
+            logger.error(f"Ошибка отправки сообщения от владельца: {e}")
+            await update.message.reply_text("❌ Не удалось отправить сообщение. Пожалуйста, сообщите об ошибке в техподдержку. Код: OWN_ERR02")
         return
     if context.user_data.get('edit_target') and context.user_data.get('edit_field'):
         target = context.user_data['edit_target']
@@ -1268,13 +1296,13 @@ async def forward_msg(update, context):
                 return
             age = int(update.message.text)
             if age < 1 or age > 50:
-                await update.message.reply_text("❌ Возраст от 1 до 50")
+                await update.message.reply_text("❌ Пожалуйста, укажите корректный возраст")
                 return
             user_profiles[target]['age'] = update.message.text
             await update.message.reply_text("✅ Возраст изменён")
         save_db()
         p = user_profiles.get(target, {})
-        text = f"👤 **Пользователь**\n🆔 ID: `{target}`\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}"
+        text = f"👤 **Пользователь**\n\n🆔 ID: `{target}`\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}"
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target, from_info))
         del context.user_data['edit_target']
         del context.user_data['edit_field']
@@ -1292,7 +1320,7 @@ async def forward_msg(update, context):
                 return
             age = int(update.message.text)
             if age < 1 or age > 50:
-                await update.message.reply_text("❌ Возраст от 1 до 50")
+                await update.message.reply_text("❌ Пожалуйста, укажите корректный возраст")
                 return
             user_profiles[uid]['age'] = update.message.text
             await update.message.reply_text("✅ Возраст изменён")
@@ -1329,10 +1357,10 @@ async def forward_msg(update, context):
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err:
                 if remove_blocked_user(uid):
-                    await update.message.reply_text("❌ Вы заблокировали бота. Пользователь удалён.")
+                    await update.message.reply_text("❌ Вы заблокировали бота. Ваш аккаунт удалён из базы.")
             else:
                 logger.error(f"Ошибка пересылки в админ-группу: {e}")
-                await update.message.reply_text("❌ Ошибка. Попробуйте позже. Код: FWD_ERR03")
+                await update.message.reply_text("❌ Произошла ошибка. Пожалуйста, попробуйте позже. Код: FWD_ERR03")
     elif uid in waiting_for_support:
         user_has_message.add(uid)
         if uid not in profile_sent:
@@ -1346,10 +1374,10 @@ async def forward_msg(update, context):
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err:
                 if remove_blocked_user(uid):
-                    await update.message.reply_text("❌ Вы заблокировали бота. Пользователь удалён.")
+                    await update.message.reply_text("❌ Вы заблокировали бота. Ваш аккаунт удалён из базы.")
             else:
                 logger.error(f"Ошибка пересылки в группу поддержки: {e}")
-                await update.message.reply_text("❌ Ошибка. Попробуйте позже. Код: FWD_ERR04")
+                await update.message.reply_text("❌ Произошла ошибка. Пожалуйста, попробуйте позже. Код: FWD_ERR04")
     else:
         if is_banned(uid):
             if uid in ban_until:
@@ -1373,18 +1401,18 @@ async def reply_to(update, context):
     if not msg or not msg.reply_to_message:
         return
     if msg.text and msg.text.startswith('//'):
-        await msg.reply_text("📝 Внутреннее сообщение (не отправлено пользователю)")
+        await msg.reply_text("📝 Внутреннее сообщение администратора (не отправлено пользователю)")
         return
     cid, rid = msg.chat.id, msg.reply_to_message.message_id
     if cid == ADMIN_APPLICATION_GROUP_ID and rid in application_messages:
         user_id = application_messages[rid]
         if user_id:
             try:
-                await context.bot.send_message(user_id, f"📨 *Ответ на анкету:*\n\n{msg.text}", parse_mode="Markdown")
-                await msg.reply_text("✅ Ответ отправлен кандидату.")
+                await context.bot.send_message(user_id, f"📨 *Ответ на вашу анкету:*\n\n{msg.text}", parse_mode="Markdown")
+                await msg.reply_text("✅ Ответ отправлен пользователю.")
             except Exception as e:
                 logger.error(f"Ошибка ответа на анкету: {e}")
-                await msg.reply_text(f"❌ Не удалось отправить. Код: APP_ERR05")
+                await msg.reply_text(f"❌ Не удалось отправить ответ. Пожалуйста, сообщите об ошибке в техподдержку. Код: APP_ERR05")
         return
     if cid == ADMIN_GROUP_ID and rid in forwarded:
         fwd, rep = forwarded, admin_replies
@@ -1400,25 +1428,25 @@ async def reply_to(update, context):
         except Exception as e:
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err:
-                await msg.reply_text(f"⚠️ {get_user_name(uid)} заблокировал бота. Пользователь удалён.")
+                await msg.reply_text(f"⚠️ {get_user_name(uid)} заблокировал бота. Пользователь удалён из базы.")
                 remove_blocked_user(uid)
             else:
                 if "not enough rights" not in err and "message is not modified" not in err:
-                    logger.error(f"Ошибка отправки ответа: {e}")
-                    await msg.reply_text("❌ Не удалось доставить сообщение. Код: REP_ERR06")
+                    logger.error(f"Ошибка отправки ответа пользователю: {e}")
+                    await msg.reply_text("❌ Не удалось доставить сообщение пользователю. Пожалуйста, сообщите об ошибке в техподдержку. Код: REP_ERR06")
     elif msg.edit_date and msg.message_id in rep:
         uid, mid = rep[msg.message_id]
         try:
             if msg.text:
-                await context.bot.edit_message_text(uid, mid, text=msg.text, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
+                await context.bot.edit_message_text(chat_id=uid, message_id=mid, text=msg.text, parse_mode=None)
             elif msg.caption:
-                await context.bot.edit_message_caption(uid, mid, caption=msg.caption, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
+                await context.bot.edit_message_caption(chat_id=uid, message_id=mid, caption=msg.caption, parse_mode=None)
         except Exception as e:
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err:
                 remove_blocked_user(uid)
             elif "message is not modified" not in err:
-                logger.error(f"Ошибка редактирования: {e}")
+                logger.error(f"Ошибка редактирования сообщения: {e}")
 
 # ==================== ОБРАБОТЧИК КНОПОК ====================
 async def button_handler(update, context):
@@ -1426,7 +1454,7 @@ async def button_handler(update, context):
     await q.answer()
     data, uid = q.data, q.from_user.id
     if maintenance_mode and uid != OWNER_ID and not data.startswith(("confirm_broad","cancel_broad","list_page_","admin_","reply_to_app_")):
-        await q.edit_message_text("🛠 Тех. работы. Зайдите позже. Код: MAINT001")
+        await q.edit_message_text("🛠 Бот на технических работах. Пожалуйста, зайдите позже. Код: MAINT001")
         return
     async def safe_send(text, reply_markup=None, parse_mode=None):
         try:
@@ -1440,7 +1468,7 @@ async def button_handler(update, context):
     # Ответ на анкету
     if data.startswith("reply_to_app_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         mid = int(data.split("_")[3])
         user_id = application_messages.get(mid)
@@ -1448,17 +1476,16 @@ async def button_handler(update, context):
             context.user_data['reply_to_applicant'] = user_id
             await safe_send("✏️ Введите текст ответа для кандидата:", reply_markup=cancel_btn())
         else:
-            await safe_send("❌ Не найден пользователь для ответа.")
+            await safe_send("❌ Не удалось найти пользователя для ответа.")
         return
     # Админ-панель
     if data == "admin_stats":
         total = len(user_profiles)
-        with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
-        sup = sum(1 for p in user_profiles.values() if p.get('type')=='support' and p.get('name') and p.get('age'))
-        com = sum(1 for p in user_profiles.values() if p.get('type')=='communication' and p.get('name') and p.get('age'))
-        not_chosen = with_profile - sup - com
+        sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support')
+        com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication')
+        not_chosen = total - sup - com
         await safe_send(
-            f"📊 **Статистика**\n\n👥 Всего: `{total}`\n✅ С анкетой: `{with_profile}`\n🆘 Поддержка: `{sup}`\n💬 Общение: `{com}`\n❓ Не выбрали: `{not_chosen}`",
+            f"📊 **Статистика**\n\n👥 Всего пользователей: `{total}`\n🆘 Поддержка: `{sup}`\n💬 Общение: `{com}`\n❓ Не выбрали тип: `{not_chosen}`",
             parse_mode="Markdown", reply_markup=admin_panel_buttons()
         )
         return
@@ -1472,29 +1499,44 @@ async def button_handler(update, context):
         return
     if data == "admin_broadcast":
         context.user_data['awaiting_broadcast'] = True
-        await safe_send("📢 **РАССЫЛКА**\n\nОтправьте сообщение.", parse_mode="Markdown", reply_markup=cancel_btn())
+        await safe_send(
+            "📢 **РАССЫЛКА**\n\nОтправьте сообщение для рассылки.\n\nПоддерживаются: текст, фото, видео, GIF, голосовые, документы.",
+            parse_mode="Markdown", reply_markup=cancel_btn()
+        )
         return
     if data == "admin_maintenance":
         kb = [[InlineKeyboardButton("🛠 Включить", callback_data="maintenance_on"), InlineKeyboardButton("✅ Выключить", callback_data="maintenance_off")]]
-        await safe_send("🔧 Управление тех. работами:", reply_markup=InlineKeyboardMarkup(kb))
+        await safe_send("🔧 Управление режимом технических работ:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+    if data == "admin_help":
+        help_text = (
+            "👑 **Панель владельца – справка**\n\n"
+            "• Статистика – общее количество пользователей и их типы.\n"
+            "• Список пользователей – постраничный список всех зарегистрированных пользователей.\n"
+            "• Поиск пользователя – поиск по ID или @username.\n"
+            "• Рассылка – отправка сообщения всем пользователям.\n"
+            "• Тех. работы – включение/отключение режима обслуживания.\n\n"
+            "При возникновении ошибок обращайтесь в техподдержку."
+        )
+        await safe_send(help_text, parse_mode="Markdown", reply_markup=admin_panel_buttons())
         return
     if data == "maintenance_on":
         if not maintenance_mode:
             await clear_all_dialogs(context)
         save_maintenance_mode(True)
-        await safe_send("🛠 Режим тех. работ ВКЛЮЧЁН. Диалоги завершены.", reply_markup=admin_panel_buttons())
+        await safe_send("🛠 Режим технических работ ВКЛЮЧЁН. Обычные пользователи не могут использовать бота. Все диалоги завершены.", reply_markup=admin_panel_buttons())
         return
     if data == "maintenance_off":
         save_maintenance_mode(False)
-        await safe_send("✅ Режим тех. работ ВЫКЛЮЧЁН.", reply_markup=admin_panel_buttons())
+        await safe_send("✅ Режим технических работ ВЫКЛЮЧЁН. Бот работает в штатном режиме.", reply_markup=admin_panel_buttons())
         return
     if data == "admin_back_main":
-        await safe_send("👑 **Панель владельца**\n\nВыберите действие:", parse_mode="Markdown", reply_markup=admin_panel_buttons())
+        await safe_send("👑 **Панель управления владельца**\n\nВыберите действие:", parse_mode="Markdown", reply_markup=admin_panel_buttons())
         return
     # Предупреждения
     if data.startswith("warn_user_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[2])
         context.user_data['warn_target'] = target_id
@@ -1502,7 +1544,7 @@ async def button_handler(update, context):
         return
     if data.startswith("warnings_history_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[2])
         conn = get_db_connection()
@@ -1519,13 +1561,13 @@ async def button_handler(update, context):
                 await safe_send(text, parse_mode="Markdown", reply_markup=user_management_buttons(target_id))
         except Exception as e:
             logger.error(f"Ошибка получения предупреждений: {e}")
-            await safe_send("❌ Не удалось загрузить историю. Код: WARN_ERR01")
+            await safe_send("❌ Не удалось загрузить историю предупреждений. Пожалуйста, сообщите об ошибке в техподдержку. Код: WARN_ERR01")
         finally:
             release_db_connection(conn)
         return
     if data.startswith("reset_profile_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[2])
         if target_id in user_profiles:
@@ -1538,7 +1580,7 @@ async def button_handler(update, context):
         else:
             await safe_send("❌ Пользователь не найден.")
         return
-    # Стандартные обработчики (сокращённо)
+    # Стандартные обработчики
     if data.startswith("gender_"):
         gender = 'male' if data=="gender_male" else 'female'
         context.user_data['data']['gender'] = gender
@@ -1564,7 +1606,7 @@ async def button_handler(update, context):
     if data.startswith("full_info_"):
         target_id = int(data.split("_")[2])
         p = user_profiles.get(target_id,{})
-        text = f"👤 **Полная информация**\n\n🆔 ID: `{target_id}`\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}"
+        text = f"👤 **Полная информация о пользователе**\n\n🆔 ID: `{target_id}`\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}\n👤 Имя в анкете: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}"
         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info=True))
         try:
             await q.message.delete()
@@ -1573,7 +1615,7 @@ async def button_handler(update, context):
         return
     if data.startswith("edit_name_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         parts = data.split("_")
         target_id = int(parts[2])
@@ -1585,7 +1627,7 @@ async def button_handler(update, context):
         return
     if data.startswith("edit_age_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         parts = data.split("_")
         target_id = int(parts[2])
@@ -1597,7 +1639,7 @@ async def button_handler(update, context):
         return
     if data.startswith("edit_type_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         parts = data.split("_")
         target_id = int(parts[2])
@@ -1607,7 +1649,7 @@ async def button_handler(update, context):
         return
     if data.startswith("edit_user_gender_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[3])
         kb = [[InlineKeyboardButton("♂️ Мужской", callback_data=f"set_gender_{target_id}_False_male"), InlineKeyboardButton("♀️ Женский", callback_data=f"set_gender_{target_id}_False_female")]]
@@ -1615,7 +1657,7 @@ async def button_handler(update, context):
         return
     if data.startswith("set_gender_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         parts = data.split("_")
         target_id = int(parts[1])
@@ -1624,12 +1666,12 @@ async def button_handler(update, context):
         user_profiles[target_id]['gender'] = new_gender
         save_db()
         p = user_profiles.get(target_id,{})
-        text = f"👤 **Пользователь**\n🆔 ID: `{target_id}`\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}"
+        text = f"👤 **Пользователь**\n\n🆔 ID: `{target_id}`\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}"
         await safe_send(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info))
         return
     if data.startswith("confirm_type_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         parts = data.split("_")
         target_id = int(parts[1])
@@ -1638,7 +1680,7 @@ async def button_handler(update, context):
         user_profiles[target_id]['type'] = new_type
         save_db()
         p = user_profiles.get(target_id,{})
-        text = f"👤 **Пользователь**\n🆔 ID: `{target_id}`\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}"
+        text = f"👤 **Пользователь**\n\n🆔 ID: `{target_id}`\n👤 Имя: {p.get('name','не указано')}\n📅 Возраст: {p.get('age','не указан')}\n{get_gender_emoji(p.get('gender'))}\n🏷️ Тип: {'🆘 #поддержка' if p.get('type')=='support' else '💬 #общение' if p.get('type')=='communication' else '❓ не выбрано'}\n📝 First name: {p.get('first_name','не указан')}\n🔖 Username: @{p.get('username','нет')}\n📅 Зарегистрирован: {p.get('registered_at','неизвестно')}"
         await safe_send(text, parse_mode="Markdown", reply_markup=profile_view_buttons(target_id, from_info))
         return
     if data.startswith("back_to_info_"):
@@ -1654,7 +1696,7 @@ async def button_handler(update, context):
         return
     if data.startswith("edit_user_name_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[3])
         context.user_data['edit_target'] = target_id
@@ -1664,7 +1706,7 @@ async def button_handler(update, context):
         return
     if data.startswith("edit_user_age_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[3])
         context.user_data['edit_target'] = target_id
@@ -1674,7 +1716,7 @@ async def button_handler(update, context):
         return
     if data.startswith("edit_user_type_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[3])
         kb = [[InlineKeyboardButton("🆘 #поддержка", callback_data=f"confirm_type_{target_id}_False_support"), InlineKeyboardButton("💬 #общение", callback_data=f"confirm_type_{target_id}_False_comm")]]
@@ -1682,15 +1724,15 @@ async def button_handler(update, context):
         return
     if data.startswith("send_msg_to_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[3])
         context.user_data['send_to_user'] = target_id
-        await safe_send("📝 Введите сообщение для пользователя (от владельца):", parse_mode="Markdown", reply_markup=cancel_btn())
+        await safe_send("📝 Введите сообщение для пользователя (оно будет отправлено с пометкой *от владельца*):", parse_mode="Markdown", reply_markup=cancel_btn())
         return
     if data.startswith("unban_user_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[2])
         if target_id in banned_users:
@@ -1698,17 +1740,17 @@ async def button_handler(update, context):
             ban_until.pop(target_id, None)
             save_db()
             try:
-                await context.bot.send_message(target_id, "👑 Владелец снял бан.")
+                await context.bot.send_message(target_id, "👑 Владелец снял с вас бан.")
             except:
                 pass
-            await safe_send(f"✅ {get_user_name(target_id)} разбанен.")
+            await safe_send(f"✅ Пользователь {get_user_name(target_id)} разбанен.")
             await show_user_full_info(update, context, target_id)
         else:
             await safe_send("❌ Пользователь не забанен.")
         return
     if data.startswith("unmute_user_"):
         if uid != OWNER_ID:
-            await q.answer("❌ Нет прав", show_alert=True)
+            await q.answer("❌ У вас нет прав", show_alert=True)
             return
         target_id = int(data.split("_")[2])
         if target_id in muted_users:
@@ -1716,7 +1758,7 @@ async def button_handler(update, context):
             mute_until.pop(target_id, None)
             save_db()
             try:
-                await context.bot.send_message(target_id, "👑 Владелец снял мут.")
+                await context.bot.send_message(target_id, "👑 Владелец снял с вас мут.")
             except:
                 pass
             await safe_send(f"✅ Мут снят с {get_user_name(target_id)}.")
@@ -1751,19 +1793,19 @@ async def button_handler(update, context):
             if is_banned(uid):
                 if uid in ban_until:
                     remaining = (ban_until[uid]-datetime.now()).total_seconds()
-                    await safe_send(f"🚫 **Вы забанены!** Осталось: {format_time_remaining(remaining)}", parse_mode="Markdown")
+                    await safe_send(f"🚫 **Вы забанены!**\n\nОсталось: {format_time_remaining(remaining)}", parse_mode="Markdown")
                 else:
                     await safe_send("🚫 **Вы забанены!**", parse_mode="Markdown")
                 return
             if is_muted(uid):
                 if uid in mute_until:
                     remaining = (mute_until[uid]-datetime.now()).total_seconds()
-                    await safe_send(f"🔇 **Вы замучены!** Осталось: {format_time_remaining(remaining)}", parse_mode="Markdown")
+                    await safe_send(f"🔇 **Вы замучены!**\n\nОсталось: {format_time_remaining(remaining)}", parse_mode="Markdown")
                 else:
                     await safe_send("🔇 **Вы замучены!**", parse_mode="Markdown")
                 return
         if not await check_subscription(update, context):
-            await safe_send("❌ Подпишитесь на канал!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]]))
+            await safe_send("❌ **Для использования бота необходимо подписаться на наш канал!**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Подписаться", url=CHANNEL_LINK)]]))
             return
         context.user_data['target'] = data
         if uid not in user_profiles:
@@ -1829,15 +1871,15 @@ async def button_handler(update, context):
             context.user_data.pop(k, None)
         await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
         return
-    # Обработка текстовых ответов
+    # Обработка текстовых ответов (поиск, предупреждения, ответ на анкету)
     if context.user_data.get('reply_to_applicant'):
         user_id = context.user_data.pop('reply_to_applicant')
         try:
-            await context.bot.send_message(user_id, f"📨 *Ответ на анкету:*\n\n{q.message.text if hasattr(q.message,'text') else 'Нет текста'}", parse_mode="Markdown")
+            await context.bot.send_message(user_id, f"📨 *Ответ на вашу анкету:*\n\n{q.message.text if hasattr(q.message,'text') else 'Нет текста'}", parse_mode="Markdown")
             await q.message.reply_text("✅ Ответ отправлен кандидату.")
         except Exception as e:
             logger.error(f"Ошибка ответа кандидату: {e}")
-            await q.message.reply_text("❌ Не удалось отправить. Код: APP_ERR06")
+            await q.message.reply_text("❌ Не удалось отправить ответ. Пожалуйста, сообщите об ошибке в техподдержку. Код: APP_ERR06")
         return
     if context.user_data.get('warn_target'):
         target_id = context.user_data.pop('warn_target')
@@ -1848,10 +1890,10 @@ async def button_handler(update, context):
                 cur.execute("INSERT INTO warnings (user_id, reason, warned_by) VALUES (%s, %s, %s)", (target_id, reason, uid))
                 conn.commit()
             await context.bot.send_message(target_id, f"⚠️ Вы получили предупреждение.\nПричина: {reason}")
-            await q.message.reply_text(f"✅ Предупреждение выдано {get_user_name(target_id)}.")
+            await q.message.reply_text(f"✅ Предупреждение выдано пользователю {get_user_name(target_id)}.")
         except Exception as e:
             logger.error(f"Ошибка выдачи предупреждения: {e}")
-            await q.message.reply_text("❌ Не удалось выдать предупреждение. Код: WARN_ERR02")
+            await q.message.reply_text("❌ Не удалось выдать предупреждение. Пожалуйста, сообщите об ошибке в техподдержку. Код: WARN_ERR02")
         finally:
             release_db_connection(conn)
         return
@@ -1874,18 +1916,16 @@ async def button_handler(update, context):
             if found:
                 await show_user_full_info(update, context, found)
             else:
-                await q.message.reply_text(f"❌ Пользователь @{username} не найден")
+                await q.message.reply_text(f"❌ Пользователь с username @{username} не найден")
         return
-    await safe_send("❌ Неизвестная команда. Код: BUTTON_ERR01")
+    await safe_send("❌ Неизвестная команда. Пожалуйста, сообщите об ошибке в техподдержку. Код: BUTTON_ERR01")
 
-# ==================== ВЕБ-СЕРВЕР ДЛЯ HEALTHCHECK ====================
+# ==================== ВЕБ-СЕРВЕР ====================
 flask_app = Flask(__name__)
-
 @flask_app.route('/')
 @flask_app.route('/health')
 def health():
     return "OK", 200
-
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port, debug=False)
@@ -1897,34 +1937,28 @@ def run():
     load_active_dialogs()
     load_forwarded_messages()
     load_maintenance_mode()
-    
     global app
     app = Application.builder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("stop", stop, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("next", next_op, filters=filters.ChatType.PRIVATE))
-
     app.add_handler(CommandHandler("ban", ban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unban", unban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("mute", mute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unmute", unmute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("info", info_command, filters=filters.ChatType.GROUPS))
-
     app.add_handler(CommandHandler("stats", stats, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("maintenance", maintenance_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("admin_panel", admin_panel, filters=filters.ChatType.PRIVATE))
-
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-
-    # Удаляем webhook перед стартом (избегаем конфликта 409)
+    # Удаляем webhook и запускаем polling (проще и стабильнее)
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
         if resp.status_code == 200:
@@ -1934,11 +1968,7 @@ def run():
         time.sleep(2)
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
-
-    # Запускаем Flask для healthcheck
     threading.Thread(target=run_web_server, daemon=True).start()
-    
-    # Запускаем polling (надёжнее для Render, если webhook конфликтует)
     logger.info("Запуск polling...")
     app.run_polling()
 
