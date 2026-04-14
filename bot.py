@@ -46,7 +46,6 @@ def get_db_connection():
 def release_db_connection(conn):
     db_pool.putconn(conn)
 
-# ==================== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ====================
 def init_db():
     conn = get_db_connection()
     try:
@@ -162,7 +161,6 @@ mute_until = {}
 user_profiles = {}
 maintenance_mode = False
 
-# ==================== РАБОТА С БАЗОЙ ДАННЫХ (ДИАЛОГИ) ====================
 def save_active_dialog(user_id, chat_type):
     conn = get_db_connection()
     try:
@@ -249,7 +247,6 @@ def remove_forwarded_message(group_id, message_id):
     finally:
         release_db_connection(conn)
 
-# ==================== ОСТАЛЬНЫЕ ФУНКЦИИ РАБОТЫ С БАЗОЙ ====================
 def load_db():
     global banned_users, muted_users, ban_until, mute_until, user_profiles
     conn = get_db_connection()
@@ -686,7 +683,7 @@ async def check_subscription(update, context):
     except:
         return False
 
-# ==================== ГЛАВНОЕ МЕНЮ (ОПТИМИЗИРОВАННОЕ) ====================
+# ==================== ГЛАВНОЕ МЕНЮ ====================
 async def send_main_menu(update, context, chat_id=None, message_id=None):
     uid = update.effective_user.id if update.effective_user else (chat_id or update.effective_chat.id)
     text = "Привет! Тебя приветствует бот\n\n<<𐔤ᥒ𐔤պᥱⲏⲏ𐔖ᥱ ᥒρ𐔖ɯ᥈𐔖ᥱ>>\n\nГлавное меню\n\n"
@@ -984,9 +981,19 @@ async def stats(update, context):
         await update.message.reply_text("❌ Нет прав")
         return
     total = len(user_profiles)
-    with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
-    sup = sum(1 for p in user_profiles.values() if p.get('type') == 'support' and p.get('name') and p.get('age'))
-    com = sum(1 for p in user_profiles.values() if p.get('type') == 'communication' and p.get('name') and p.get('age'))
+    # Правильная статистика: считаем только тех, у кого заполнены name и age
+    with_profile = 0
+    sup = 0
+    com = 0
+    for p in user_profiles.values():
+        name = p.get('name')
+        age = p.get('age')
+        if name and str(name).strip() and age and str(age).strip():
+            with_profile += 1
+            if p.get('type') == 'support':
+                sup += 1
+            elif p.get('type') == 'communication':
+                com += 1
     not_chosen = with_profile - sup - com
     await update.message.reply_text(
         f"📊 **Статистика**\n\n"
@@ -1433,6 +1440,7 @@ async def button_handler(update, context):
             except:
                 pass
             await q.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    # Ответ на анкету
     if data.startswith("reply_to_app_"):
         if uid != OWNER_ID:
             await q.answer("❌ Нет прав", show_alert=True)
@@ -1445,11 +1453,21 @@ async def button_handler(update, context):
         else:
             await safe_send("❌ Не найден пользователь для ответа.")
         return
+    # Админ-панель
     if data == "admin_stats":
         total = len(user_profiles)
-        with_profile = sum(1 for p in user_profiles.values() if p.get('name') and p.get('age'))
-        sup = sum(1 for p in user_profiles.values() if p.get('type')=='support' and p.get('name') and p.get('age'))
-        com = sum(1 for p in user_profiles.values() if p.get('type')=='communication' and p.get('name') and p.get('age'))
+        with_profile = 0
+        sup = 0
+        com = 0
+        for p in user_profiles.values():
+            name = p.get('name')
+            age = p.get('age')
+            if name and str(name).strip() and age and str(age).strip():
+                with_profile += 1
+                if p.get('type') == 'support':
+                    sup += 1
+                elif p.get('type') == 'communication':
+                    com += 1
         not_chosen = with_profile - sup - com
         await safe_send(
             f"📊 **Статистика**\n\n👥 Всего: `{total}`\n✅ С анкетой: `{with_profile}`\n🆘 Поддержка: `{sup}`\n💬 Общение: `{com}`\n❓ Не выбрали: `{not_chosen}`",
@@ -1485,6 +1503,7 @@ async def button_handler(update, context):
     if data == "admin_back_main":
         await safe_send("👑 **Панель владельца**\n\nВыберите действие:", parse_mode="Markdown", reply_markup=admin_panel_buttons())
         return
+    # Предупреждения
     if data.startswith("warn_user_"):
         if uid != OWNER_ID:
             await q.answer("❌ Нет прав", show_alert=True)
@@ -1531,6 +1550,7 @@ async def button_handler(update, context):
         else:
             await safe_send("❌ Пользователь не найден.")
         return
+    # Стандартные обработчики
     if data.startswith("gender_"):
         gender = 'male' if data=="gender_male" else 'female'
         context.user_data['data']['gender'] = gender
@@ -1821,6 +1841,7 @@ async def button_handler(update, context):
             context.user_data.pop(k, None)
         await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
         return
+    # Обработка текстовых ответов
     if context.user_data.get('reply_to_applicant'):
         user_id = context.user_data.pop('reply_to_applicant')
         try:
@@ -1869,53 +1890,44 @@ async def button_handler(update, context):
         return
     await safe_send("❌ Неизвестная команда. Код: BUTTON_ERR01")
 
-# ==================== ВЕБ-СЕРВЕР ДЛЯ HEALTHCHECK ====================
+# ==================== ВЕБ-СЕРВЕР ====================
 flask_app = Flask(__name__)
-
 @flask_app.route('/')
 @flask_app.route('/health')
 def health():
     return "OK", 200
-
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port, debug=False)
 
-# ==================== ЗАПУСК (POLLING) ====================
 def run():
     init_db()
     load_db()
     load_active_dialogs()
     load_forwarded_messages()
     load_maintenance_mode()
-    
     global app
     app = Application.builder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("stop", stop, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("next", next_op, filters=filters.ChatType.PRIVATE))
-
     app.add_handler(CommandHandler("ban", ban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unban", unban, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("mute", mute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("unmute", unmute, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("info", info_command, filters=filters.ChatType.GROUPS))
-
     app.add_handler(CommandHandler("stats", stats, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("maintenance", maintenance_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("admin_panel", admin_panel, filters=filters.ChatType.PRIVATE))
-
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-
-    # Удаляем webhook перед стартом (на случай, если он остался)
+    # Удаляем webhook перед стартом
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
         if resp.status_code == 200:
@@ -1925,11 +1937,7 @@ def run():
         time.sleep(2)
     except Exception as e:
         logger.error(f"Ошибка удаления webhook: {e}")
-
-    # Запускаем Flask для healthcheck в отдельном потоке
     threading.Thread(target=run_web_server, daemon=True).start()
-    
-    # Запускаем polling
     logger.info("Запуск polling...")
     app.run_polling()
 
