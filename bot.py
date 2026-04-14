@@ -618,14 +618,20 @@ async def finish_application(update, context):
     global application_messages
     try:
         for idx, part in enumerate(parts):
+            # Отправляем без кнопки
             sent = await context.bot.send_message(
                 chat_id=ADMIN_APPLICATION_GROUP_ID,
                 text=part,
-                parse_mode=None,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_app_{sent.message_id}")]])
+                parse_mode=None
             )
             if idx == 0:
                 application_messages[sent.message_id] = user_id
+            # Добавляем кнопку "Ответить" через редактирование
+            await context.bot.edit_message_reply_markup(
+                chat_id=ADMIN_APPLICATION_GROUP_ID,
+                message_id=sent.message_id,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_app_{sent.message_id}")]])
+            )
     except Exception as e:
         logger.error(f"Ошибка отправки анкеты: {e}")
         try:
@@ -635,10 +641,14 @@ async def finish_application(update, context):
             sent = await context.bot.send_document(
                 chat_id=ADMIN_APPLICATION_GROUP_ID,
                 document=file,
-                caption=f"📝 Анкета кандидата {first_name} (@{username})",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_app_{sent.message_id}")]])
+                caption=f"📝 Анкета кандидата {first_name} (@{username})"
             )
             application_messages[sent.message_id] = user_id
+            await context.bot.edit_message_reply_markup(
+                chat_id=ADMIN_APPLICATION_GROUP_ID,
+                message_id=sent.message_id,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_app_{sent.message_id}")]])
+            )
         except Exception as e2:
             await update.message.reply_text("❌ Ошибка при отправке анкеты. Пожалуйста, попробуйте позже или обратитесь в техподдержку. Код: APP_ERR01")
             del context.user_data['admin_application']
@@ -1240,12 +1250,83 @@ async def send_media_to_user(bot, user_id, message):
     else:
         return await bot.forward_message(user_id, message.chat_id, message.message_id)
 
+# ==================== ОСНОВНОЙ ОБРАБОТЧИК ЛИЧНЫХ СООБЩЕНИЙ ====================
 async def forward_msg(update, context):
     if not update.message or update.message.chat.type != "private":
         return
     uid = update.message.chat_id
     user = update.effective_user
     update_user_info(user.id, user.first_name, user.username)
+
+    # ----- ОБРАБОТКА СОСТОЯНИЙ (ОТВЕТ НА АНКЕТУ, ПРЕДУПРЕЖДЕНИЕ, ПОИСК) -----
+    # Ответ на анкету (владелец)
+    if context.user_data.get('reply_to_applicant'):
+        applicant_id = context.user_data.pop('reply_to_applicant')
+        msg_id = context.user_data.pop('reply_to_message_id', None)
+        if uid != OWNER_ID:
+            await update.message.reply_text("❌ У вас нет прав на это действие.")
+            return
+        try:
+            await context.bot.send_message(applicant_id, f"📨 *Ответ на вашу анкету:*\n\n{update.message.text}", parse_mode="Markdown")
+            await update.message.reply_text("✅ Ответ отправлен кандидату.")
+            if msg_id and msg_id in application_messages:
+                try:
+                    await context.bot.edit_message_reply_markup(chat_id=ADMIN_APPLICATION_GROUP_ID, message_id=msg_id, reply_markup=None)
+                except:
+                    pass
+        except Exception as e:
+            logger.error(f"Ошибка ответа кандидату: {e}")
+            await update.message.reply_text("❌ Не удалось отправить ответ. Пожалуйста, обратитесь в техподдержку. Код: APP_ERR06")
+        return
+
+    # Выдача предупреждения (владелец)
+    if context.user_data.get('warn_target'):
+        target_id = context.user_data.pop('warn_target')
+        reason = update.message.text
+        if uid != OWNER_ID:
+            await update.message.reply_text("❌ У вас нет прав на это действие.")
+            return
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO warnings (user_id, reason, warned_by) VALUES (%s, %s, %s)", (target_id, reason, uid))
+                conn.commit()
+            await context.bot.send_message(target_id, f"⚠️ Вы получили предупреждение от администратора.\nПричина: {reason}")
+            await update.message.reply_text(f"✅ Предупреждение выдано пользователю {get_user_name(target_id)}.")
+        except Exception as e:
+            logger.error(f"Ошибка выдачи предупреждения: {e}")
+            await update.message.reply_text("❌ Не удалось выдать предупреждение. Пожалуйста, обратитесь в техподдержку. Код: WARN_ERR02")
+        finally:
+            release_db_connection(conn)
+        return
+
+    # Поиск пользователя (владелец)
+    if context.user_data.get('awaiting_user_search'):
+        context.user_data.pop('awaiting_user_search')
+        if uid != OWNER_ID:
+            await update.message.reply_text("❌ У вас нет прав на это действие.")
+            return
+        query = update.message.text
+        if query.isdigit():
+            target_id = int(query)
+            if target_id in user_profiles:
+                await show_user_full_info(update, context, target_id)
+            else:
+                await update.message.reply_text(f"❌ Пользователь с ID {target_id} не найден")
+        else:
+            username = query.lstrip('@').lower()
+            found = None
+            for uid2, data in user_profiles.items():
+                if data.get('username','').lower() == username:
+                    found = uid2
+                    break
+            if found:
+                await show_user_full_info(update, context, found)
+            else:
+                await update.message.reply_text(f"❌ Пользователь с username @{username} не найден")
+        return
+
+    # ----- ОСТАЛЬНЫЕ ОБРАБОТКИ -----
     if context.user_data.get('admin_application'):
         await process_application_answer(update, context)
         return
@@ -1377,6 +1458,7 @@ async def forward_msg(update, context):
         else:
             await update.message.reply_text("❌ Нажмите 'Написать админу' или 'Тех.поддержка'")
 
+# ==================== ОБРАБОТЧИК СООБЩЕНИЙ В ГРУППАХ (ОТВЕТЫ И РЕДАКТИРОВАНИЕ) ====================
 async def reply_to(update, context):
     if not await check_group_access(update, context):
         return
@@ -1431,6 +1513,7 @@ async def reply_to(update, context):
             elif "message is not modified" not in err:
                 logger.error(f"Ошибка редактирования: {e}")
 
+# ==================== ОБРАБОТЧИК КНОПОК (CALLBACK) ====================
 async def button_handler(update, context):
     q = update.callback_query
     await q.answer()
@@ -1855,60 +1938,6 @@ async def button_handler(update, context):
         for k in ['awaiting','step','data','target','edit','awaiting_broadcast','target_type','send_to_user','edit_target','edit_field','edit_from_info','awaiting_user_search','reply_to_applicant','warn_target']:
             context.user_data.pop(k, None)
         await send_main_menu(update, context, chat_id=q.message.chat.id, message_id=q.message.message_id)
-        return
-    # Обработка текстовых ответов (для поиска, предупреждений, ответа на анкету)
-    if context.user_data.get('reply_to_applicant'):
-        user_id = context.user_data.pop('reply_to_applicant')
-        msg_id = context.user_data.pop('reply_to_message_id', None)
-        try:
-            await context.bot.send_message(user_id, f"📨 *Ответ на вашу анкету:*\n\n{q.message.text if hasattr(q.message,'text') else 'Нет текста'}", parse_mode="Markdown")
-            await q.message.reply_text("✅ Ответ отправлен кандидату.")
-            if msg_id and msg_id in application_messages:
-                # Удаляем кнопку "Ответить" из исходного сообщения в группе
-                try:
-                    await context.bot.edit_message_reply_markup(chat_id=ADMIN_APPLICATION_GROUP_ID, message_id=msg_id, reply_markup=None)
-                except:
-                    pass
-        except Exception as e:
-            logger.error(f"Ошибка ответа кандидату: {e}")
-            await q.message.reply_text("❌ Не удалось отправить ответ. Пожалуйста, обратитесь в техподдержку. Код: APP_ERR06")
-        return
-    if context.user_data.get('warn_target'):
-        target_id = context.user_data.pop('warn_target')
-        reason = q.message.text if hasattr(q.message,'text') else "Не указана"
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("INSERT INTO warnings (user_id, reason, warned_by) VALUES (%s, %s, %s)", (target_id, reason, uid))
-                conn.commit()
-            await context.bot.send_message(target_id, f"⚠️ Вы получили предупреждение от администратора.\nПричина: {reason}")
-            await q.message.reply_text(f"✅ Предупреждение выдано пользователю {get_user_name(target_id)}.")
-        except Exception as e:
-            logger.error(f"Ошибка выдачи предупреждения: {e}")
-            await q.message.reply_text("❌ Не удалось выдать предупреждение. Пожалуйста, обратитесь в техподдержку. Код: WARN_ERR02")
-        finally:
-            release_db_connection(conn)
-        return
-    if context.user_data.get('awaiting_user_search'):
-        context.user_data.pop('awaiting_user_search')
-        query = q.message.text if hasattr(q.message,'text') else ''
-        if query.isdigit():
-            target_id = int(query)
-            if target_id in user_profiles:
-                await show_user_full_info(update, context, target_id)
-            else:
-                await q.message.reply_text(f"❌ Пользователь с ID {target_id} не найден")
-        else:
-            username = query.lstrip('@').lower()
-            found = None
-            for uid, data in user_profiles.items():
-                if data.get('username','').lower() == username:
-                    found = uid
-                    break
-            if found:
-                await show_user_full_info(update, context, found)
-            else:
-                await q.message.reply_text(f"❌ Пользователь с username @{username} не найден")
         return
     await safe_send("❌ Неизвестная команда. Пожалуйста, обратитесь в техподдержку. Код: BUTTON_ERR01")
 
