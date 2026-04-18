@@ -7,6 +7,8 @@ import sys
 import logging
 import threading
 import time
+import csv
+import io
 import requests
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
@@ -15,7 +17,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
-from flask import Flask
+from flask import Flask, request, jsonify
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -106,7 +108,6 @@ def init_db():
                     warned_at TIMESTAMP DEFAULT NOW()
                 )
             """)
-            # Таблица для хранения связей сообщений админ -> пользователь
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS admin_replies (
                     group_id BIGINT NOT NULL,
@@ -117,11 +118,6 @@ def init_db():
                     PRIMARY KEY (group_id, admin_msg_id)
                 )
             """)
-            # Миграция для старых таблиц (если колонки id нет)
-            try:
-                cur.execute("ALTER TABLE warnings ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY")
-            except:
-                pass
             cur.execute("""
                 INSERT INTO bot_settings (key, value) VALUES ('maintenance_mode', 'false')
                 ON CONFLICT (key) DO NOTHING
@@ -265,7 +261,6 @@ def remove_forwarded_message(group_id, message_id):
     finally:
         release_db_connection(conn)
 
-# ==================== НОВЫЕ ФУНКЦИИ ДЛЯ ХРАНЕНИЯ ОТВЕТОВ ====================
 def save_admin_reply(group_id, admin_msg_id, user_id, user_msg_id, chat_type):
     conn = get_db_connection()
     try:
@@ -718,12 +713,10 @@ async def application_type_callback(update, context):
 
 # ==================== ФУНКЦИИ ДЛЯ КНОПКИ "ОТВЕТИТЬ" ПОЛЬЗОВАТЕЛЯ ====================
 async def add_reply_button_to_user(user_id, chat_type, context, original_message_id=None):
-    """Отправляет пользователю сообщение с кнопкой 'Ответить', которая вернёт его в диалог (только для анкет)"""
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Ответить", callback_data=f"reply_to_{chat_type}_{original_message_id}")]])
     await context.bot.send_message(user_id, "Вы можете ответить администратору, нажав на кнопку ниже:", reply_markup=keyboard)
 
 async def handle_user_reply_button(update, context):
-    """Обработчик нажатия пользователем кнопки 'Ответить'"""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -1327,6 +1320,55 @@ async def send_media_to_user(bot, user_id, message):
     else:
         return await bot.forward_message(user_id, message.chat_id, message.message_id)
 
+# ==================== ЭКСПОРТ ПОЛЬЗОВАТЕЛЕЙ В CSV ====================
+async def export_users(update, context):
+    """Команда для выгрузки всех пользователей из БД в CSV-файл (только для владельца)"""
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ У вас нет прав на эту команду.")
+        return
+    await update.message.reply_text("⏳ Формирую файл с пользователями...")
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("""
+                SELECT user_id, first_name, username, registered_at, name, age, gender, type
+                FROM users
+                ORDER BY user_id
+            """)
+            rows = cur.fetchall()
+            if not rows:
+                await update.message.reply_text("📭 База пользователей пуста.")
+                return
+            # Создаём CSV в памяти
+            output = io.StringIO()
+            writer = csv.writer(output, delimiter=';', quoting=csv.QUOTE_MINIMAL)
+            writer.writerow(['user_id', 'first_name', 'username', 'registered_at', 'name', 'age', 'gender', 'type'])
+            for row in rows:
+                writer.writerow([
+                    row['user_id'],
+                    row['first_name'] or '',
+                    row['username'] or '',
+                    row['registered_at'].isoformat() if row['registered_at'] else '',
+                    row['name'] or '',
+                    row['age'] or '',
+                    row['gender'] or '',
+                    row['type'] or ''
+                ])
+            output.seek(0)
+            # Отправляем файл
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=output.getvalue().encode('utf-8-sig'),
+                filename=f"users_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                caption=f"📊 Всего пользователей: {len(rows)}"
+            )
+            logger.info(f"Владелец {OWNER_ID} выгрузил {len(rows)} пользователей")
+    except Exception as e:
+        logger.error(f"Ошибка экспорта пользователей: {e}")
+        await update.message.reply_text("❌ Не удалось выгрузить пользователей. Обратитесь в техподдержку. Код: EXP_ERR01")
+    finally:
+        release_db_connection(conn)
+
 # ==================== ОСНОВНОЙ ОБРАБОТЧИК ЛИЧНЫХ СООБЩЕНИЙ ====================
 async def forward_msg(update, context):
     if not update.message or update.message.chat.type != "private":
@@ -1551,7 +1593,6 @@ async def reply_to(update, context):
             try:
                 await context.bot.send_message(user_id, f"📨 *Ответ на вашу анкету:*\n\n{msg.text}", parse_mode="Markdown")
                 await msg.reply_text("✅ Ответ отправлен пользователю.")
-                # Отправляем кнопку "Ответить" только для анкеты
                 await add_reply_button_to_user(user_id, 'admin', context, original_message_id=None)
             except Exception as e:
                 logger.error(f"Ошибка ответа на анкету: {e}")
@@ -1573,7 +1614,6 @@ async def reply_to(update, context):
         try:
             sent = await send_media_to_user(context.bot, uid, msg)
             rep[msg.message_id] = (uid, sent.message_id)
-            # Сохраняем связь в БД
             save_admin_reply(cid, msg.message_id, uid, sent.message_id, chat_type)
         except Exception as e:
             err = str(e).lower()
@@ -1622,12 +1662,10 @@ async def button_handler(update, context):
                 pass
             await q.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
 
-    # Обработка кнопки "Ответить" для пользователя
     if data.startswith("reply_to_"):
         await handle_user_reply_button(update, context)
         return
 
-    # Обработка снятия предупреждения
     if data.startswith("remove_warning_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -1650,7 +1688,6 @@ async def button_handler(update, context):
             release_db_connection(conn)
         return
 
-    # Ответ на анкету (через callback, оставлено для совместимости)
     if data.startswith("reply_to_app_"):
         if uid != OWNER_ID:
             await q.answer("❌ У вас нет прав", show_alert=True)
@@ -2082,25 +2119,51 @@ async def button_handler(update, context):
 
     await safe_send("❌ Неизвестная команда. Пожалуйста, обратитесь в техподдержку. Код: BUTTON_ERR01")
 
-# ==================== ВЕБ-СЕРВЕР ====================
+# ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER (WEBHOOK) ====================
 flask_app = Flask(__name__)
+
 @flask_app.route('/')
 @flask_app.route('/health')
 def health():
     return "OK", 200
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host='0.0.0.0', port=port, debug=False)
+
+@flask_app.route(f'/webhook/{TOKEN}', methods=['POST'])
+def webhook():
+    """Принимает обновления от Telegram и передаёт их боту"""
+    try:
+        update = Update.de_json(request.get_json(force=True), app.bot)
+        asyncio.run_coroutine_threadsafe(app.process_update(update), loop)
+        return 'OK', 200
+    except Exception as e:
+        logger.error(f"Ошибка в webhook: {e}")
+        return 'Internal Server Error', 500
+
+async def setup_webhook():
+    """Устанавливает вебхук для бота"""
+    # Получаем URL приложения из переменной окружения Render
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not render_url:
+        # fallback для локальной разработки
+        render_url = "https://your-app.onrender.com"
+    webhook_url = f"{render_url}/webhook/{TOKEN}"
+    await app.bot.set_webhook(webhook_url, drop_pending_updates=True)
+    logger.info(f"Webhook установлен на {webhook_url}")
+
+# ==================== ЗАПУСК ====================
+app = None
+loop = None
 
 def run():
+    global app, loop
     init_db()
     load_db()
     load_active_dialogs()
     load_forwarded_messages()
-    load_admin_replies()  # загружаем сохранённые ответы
+    load_admin_replies()
     load_maintenance_mode()
-    global app
+
     app = Application.builder().token(TOKEN).build()
+    # Добавляем все обработчики
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
@@ -2117,28 +2180,34 @@ def run():
     app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("maintenance", maintenance_command, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("admin_panel", admin_panel, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("export_users", export_users, filters=filters.ChatType.PRIVATE))  # новая команда
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
     app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.ChatType.GROUPS, edited_reply_to))
 
-    try:
-        resp = requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook?drop_pending_updates=True")
-        if resp.status_code == 200:
-            logger.info("Webhook удалён")
-        else:
-            logger.warning(f"Не удалось удалить webhook: {resp.text}")
-        time.sleep(2)
-    except Exception as e:
-        logger.error(f"Ошибка удаления webhook: {e}")
-    threading.Thread(target=run_web_server, daemon=True).start()
-    logger.info("Запуск polling...")
-    app.run_polling()
+    # Инициализируем event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Устанавливаем вебхук (синхронно внутри asyncio)
+    loop.run_until_complete(setup_webhook())
+
+    # Запускаем Flask в отдельном потоке (основной сервер)
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Запуск Flask на порту {port}...")
+    flask_app.run(host='0.0.0.0', port=port, debug=False)
 
 def shutdown_handler(signum, frame):
     logger.info("Получен сигнал завершения, останавливаем бота...")
-    if app:
-        app.stop()
+    if loop and app:
+        # Удаляем вебхук при остановке (опционально)
+        async def shutdown_webhook():
+            await app.bot.delete_webhook()
+        try:
+            loop.run_until_complete(shutdown_webhook())
+        except:
+            pass
     sys.exit(0)
 
 if __name__ == "__main__":
