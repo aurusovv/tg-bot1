@@ -13,7 +13,7 @@ import requests
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
-from telegram.error import TelegramError, Forbidden, BadRequest
+from telegram.error import TelegramError, Forbidden, BadRequest, RetryAfter
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
@@ -1098,31 +1098,56 @@ async def save_broadcast_data(update, context, uid):
     if msg.text:
         broadcast_data[uid] = {'type':'text','content':msg.text,'parse_mode':msg.parse_mode}
     elif msg.photo:
-        broadcast_data[uid] = {'type':'photo','content':msg.photo[-1].file_id,'caption':msg.caption,'parse_mode':msg.parse_mode}
+        broadcast_data[uid] = {
+            'type':'photo',
+            'content':msg.photo[-1].file_id,
+            'caption':msg.caption,
+            'parse_mode': getattr(msg, 'parse_mode', None)
+        }
     elif msg.video:
-        broadcast_data[uid] = {'type':'video','content':msg.video.file_id,'caption':msg.caption,'parse_mode':msg.parse_mode}
+        broadcast_data[uid] = {
+            'type':'video',
+            'content':msg.video.file_id,
+            'caption':msg.caption,
+            'parse_mode': getattr(msg, 'parse_mode', None)
+        }
     elif msg.animation:
-        broadcast_data[uid] = {'type':'animation','content':msg.animation.file_id,'caption':msg.caption,'parse_mode':msg.parse_mode}
+        broadcast_data[uid] = {
+            'type':'animation',
+            'content':msg.animation.file_id,
+            'caption':msg.caption,
+            'parse_mode': getattr(msg, 'parse_mode', None)
+        }
     elif msg.voice:
-        broadcast_data[uid] = {'type':'voice','content':msg.voice.file_id,'caption':msg.caption}
+        broadcast_data[uid] = {
+            'type':'voice',
+            'content':msg.voice.file_id,
+            'caption':msg.caption
+        }
     elif msg.document:
-        broadcast_data[uid] = {'type':'document','content':msg.document.file_id,'caption':msg.caption,'parse_mode':msg.parse_mode}
+        broadcast_data[uid] = {
+            'type':'document',
+            'content':msg.document.file_id,
+            'caption':msg.caption,
+            'parse_mode': getattr(msg, 'parse_mode', None)
+        }
     else:
         await update.message.reply_text("❌ Этот тип не поддерживается. Код: BC_ERR01")
         return
     await update.message.reply_text("📢 **ПРЕВЬЮ РАССЫЛКИ:**", parse_mode="Markdown")
-    if broadcast_data[uid]['type']=='text':
-        await update.message.reply_text(broadcast_data[uid]['content'], parse_mode=broadcast_data[uid].get('parse_mode','HTML'))
-    elif broadcast_data[uid]['type']=='photo':
-        await update.message.reply_photo(photo=broadcast_data[uid]['content'], caption=broadcast_data[uid].get('caption'), parse_mode=broadcast_data[uid].get('parse_mode'))
-    elif broadcast_data[uid]['type']=='video':
-        await update.message.reply_video(video=broadcast_data[uid]['content'], caption=broadcast_data[uid].get('caption'), parse_mode=broadcast_data[uid].get('parse_mode'))
-    elif broadcast_data[uid]['type']=='animation':
-        await update.message.reply_animation(animation=broadcast_data[uid]['content'], caption=broadcast_data[uid].get('caption'), parse_mode=broadcast_data[uid].get('parse_mode'))
-    elif broadcast_data[uid]['type']=='voice':
-        await update.message.reply_voice(voice=broadcast_data[uid]['content'], caption=broadcast_data[uid].get('caption'))
-    elif broadcast_data[uid]['type']=='document':
-        await update.message.reply_document(document=broadcast_data[uid]['content'], caption=broadcast_data[uid].get('caption'), parse_mode=broadcast_data[uid].get('parse_mode'))
+    data = broadcast_data[uid]
+    if data['type']=='text':
+        await update.message.reply_text(data['content'], parse_mode=data.get('parse_mode','HTML'))
+    elif data['type']=='photo':
+        await update.message.reply_photo(photo=data['content'], caption=data.get('caption'), parse_mode=data.get('parse_mode'))
+    elif data['type']=='video':
+        await update.message.reply_video(video=data['content'], caption=data.get('caption'), parse_mode=data.get('parse_mode'))
+    elif data['type']=='animation':
+        await update.message.reply_animation(animation=data['content'], caption=data.get('caption'), parse_mode=data.get('parse_mode'))
+    elif data['type']=='voice':
+        await update.message.reply_voice(voice=data['content'], caption=data.get('caption'))
+    elif data['type']=='document':
+        await update.message.reply_document(document=data['content'], caption=data.get('caption'), parse_mode=data.get('parse_mode'))
     kb = [[InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_broad"), InlineKeyboardButton("❌ Отмена", callback_data="cancel_broad")]]
     await update.message.reply_text("Отправить рассылку?", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -1304,70 +1329,21 @@ async def send_media_to_user(bot, user_id, message):
     if message.text:
         return await bot.send_message(user_id, message.text, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
     elif message.photo:
-        return await bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption, parse_mode=getattr(message, 'parse_mode', None))
     elif message.video:
-        return await bot.send_video(user_id, message.video.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_video(user_id, message.video.file_id, caption=message.caption, parse_mode=getattr(message, 'parse_mode', None))
     elif message.animation:
-        return await bot.send_animation(user_id, message.animation.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_animation(user_id, message.animation.file_id, caption=message.caption, parse_mode=getattr(message, 'parse_mode', None))
     elif message.voice:
         return await bot.send_voice(user_id, message.voice.file_id, caption=message.caption)
     elif message.document:
-        return await bot.send_document(user_id, message.document.file_id, caption=message.caption, parse_mode=message.parse_mode if hasattr(message, 'parse_mode') else None)
+        return await bot.send_document(user_id, message.document.file_id, caption=message.caption, parse_mode=getattr(message, 'parse_mode', None))
     elif message.sticker:
         return await bot.send_sticker(user_id, message.sticker.file_id)
     elif message.video_note:
         return await bot.send_video_note(user_id, message.video_note.file_id)
     else:
         return await bot.forward_message(user_id, message.chat_id, message.message_id)
-
-# ==================== ЭКСПОРТ ПОЛЬЗОВАТЕЛЕЙ В CSV ====================
-async def export_users(update, context):
-    """Команда для выгрузки всех пользователей из БД в CSV-файл (только для владельца)"""
-    if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ У вас нет прав на эту команду.")
-        return
-    await update.message.reply_text("⏳ Формирую файл с пользователями...")
-    conn = get_db_connection()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("""
-                SELECT user_id, first_name, username, registered_at, name, age, gender, type
-                FROM users
-                ORDER BY user_id
-            """)
-            rows = cur.fetchall()
-            if not rows:
-                await update.message.reply_text("📭 База пользователей пуста.")
-                return
-            # Создаём CSV в памяти
-            output = io.StringIO()
-            writer = csv.writer(output, delimiter=';', quoting=csv.QUOTE_MINIMAL)
-            writer.writerow(['user_id', 'first_name', 'username', 'registered_at', 'name', 'age', 'gender', 'type'])
-            for row in rows:
-                writer.writerow([
-                    row['user_id'],
-                    row['first_name'] or '',
-                    row['username'] or '',
-                    row['registered_at'].isoformat() if row['registered_at'] else '',
-                    row['name'] or '',
-                    row['age'] or '',
-                    row['gender'] or '',
-                    row['type'] or ''
-                ])
-            output.seek(0)
-            # Отправляем файл
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=output.getvalue().encode('utf-8-sig'),
-                filename=f"users_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                caption=f"📊 Всего пользователей: {len(rows)}"
-            )
-            logger.info(f"Владелец {OWNER_ID} выгрузил {len(rows)} пользователей")
-    except Exception as e:
-        logger.error(f"Ошибка экспорта пользователей: {e}")
-        await update.message.reply_text("❌ Не удалось выгрузить пользователей. Обратитесь в техподдержку. Код: EXP_ERR01")
-    finally:
-        release_db_connection(conn)
 
 # ==================== ОСНОВНОЙ ОБРАБОТЧИК ЛИЧНЫХ СООБЩЕНИЙ ====================
 async def forward_msg(update, context):
@@ -1629,10 +1605,10 @@ async def reply_to(update, context):
         logger.info(f"Редактирование: найдено сообщение uid={uid}, mid={mid}")
         try:
             if msg.text:
-                await context.bot.edit_message_text(uid, mid, text=msg.text, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
+                await context.bot.edit_message_text(chat_id=uid, message_id=mid, text=msg.text, parse_mode=getattr(msg, 'parse_mode', None))
                 logger.info(f"Текст сообщения {mid} обновлён")
             elif msg.caption:
-                await context.bot.edit_message_caption(uid, mid, caption=msg.caption, parse_mode=msg.parse_mode if hasattr(msg, 'parse_mode') else None)
+                await context.bot.edit_message_caption(chat_id=uid, message_id=mid, caption=msg.caption, parse_mode=getattr(msg, 'parse_mode', None))
                 logger.info(f"Подпись сообщения {mid} обновлена")
         except Exception as e:
             err = str(e).lower()
@@ -2119,8 +2095,59 @@ async def button_handler(update, context):
 
     await safe_send("❌ Неизвестная команда. Пожалуйста, обратитесь в техподдержку. Код: BUTTON_ERR01")
 
-# ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER (WEBHOOK) ====================
+# ==================== ВЕБ-СЕРВЕР ДЛЯ ALWAYSDATA (WEBHOOK) ====================
 flask_app = Flask(__name__)
+
+# Глобальные объекты для Telegram (инициализируются при импорте)
+_telegram_app = None
+_loop = None
+
+def init_telegram():
+    """Инициализирует Telegram-бота (вызывается один раз при старте)"""
+    global _telegram_app, _loop
+    if _telegram_app is not None:
+        return
+    init_db()
+    load_db()
+    load_active_dialogs()
+    load_forwarded_messages()
+    load_admin_replies()
+    load_maintenance_mode()
+
+    _telegram_app = Application.builder().token(TOKEN).build()
+    # Добавляем все обработчики
+    _telegram_app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("stop", stop, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("next", next_op, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("ban", ban, filters=filters.ChatType.GROUPS))
+    _telegram_app.add_handler(CommandHandler("unban", unban, filters=filters.ChatType.GROUPS))
+    _telegram_app.add_handler(CommandHandler("mute", mute, filters=filters.ChatType.GROUPS))
+    _telegram_app.add_handler(CommandHandler("unmute", unmute, filters=filters.ChatType.GROUPS))
+    _telegram_app.add_handler(CommandHandler("info", info_command, filters=filters.ChatType.GROUPS))
+    _telegram_app.add_handler(CommandHandler("stats", stats, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("maintenance", maintenance_command, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CommandHandler("admin_panel", admin_panel, filters=filters.ChatType.PRIVATE))
+    _telegram_app.add_handler(CallbackQueryHandler(button_handler))
+    _telegram_app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
+    _telegram_app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
+    _telegram_app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.ChatType.GROUPS, edited_reply_to))
+
+    # Создаём event loop для асинхронных вызовов
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
+
+    # Устанавливаем вебхук
+    _loop.run_until_complete(setup_webhook())
+
+def setup_webhook():
+    """Асинхронная установка вебхука"""
+    webhook_url = f"https://anocolos.alwaysdata.net/webhook/{TOKEN}"
+    return _telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
 
 @flask_app.route('/')
 @flask_app.route('/health')
@@ -2131,86 +2158,15 @@ def health():
 def webhook():
     """Принимает обновления от Telegram и передаёт их боту"""
     try:
-        update = Update.de_json(request.get_json(force=True), app.bot)
-        asyncio.run_coroutine_threadsafe(app.process_update(update), loop)
+        if _telegram_app is None:
+            logger.error("Telegram app not initialized")
+            return 'Service Unavailable', 503
+        update = Update.de_json(request.get_json(force=True), _telegram_app.bot)
+        asyncio.run_coroutine_threadsafe(_telegram_app.process_update(update), _loop)
         return 'OK', 200
     except Exception as e:
         logger.error(f"Ошибка в webhook: {e}")
         return 'Internal Server Error', 500
 
-async def setup_webhook():
-    """Устанавливает вебхук для бота"""
-    # Получаем URL приложения из переменной окружения Render
-    render_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not render_url:
-        # fallback для локальной разработки
-        render_url = "https://your-app.onrender.com"
-    webhook_url = f"{render_url}/webhook/{TOKEN}"
-    await app.bot.set_webhook(webhook_url, drop_pending_updates=True)
-    logger.info(f"Webhook установлен на {webhook_url}")
-
-# ==================== ЗАПУСК ====================
-app = None
-loop = None
-
-def run():
-    global app, loop
-    init_db()
-    load_db()
-    load_active_dialogs()
-    load_forwarded_messages()
-    load_admin_replies()
-    load_maintenance_mode()
-
-    app = Application.builder().token(TOKEN).build()
-    # Добавляем все обработчики
-    app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("settings", settings, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("stop", stop, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("next", next_op, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("ban", ban, filters=filters.ChatType.GROUPS))
-    app.add_handler(CommandHandler("unban", unban, filters=filters.ChatType.GROUPS))
-    app.add_handler(CommandHandler("mute", mute, filters=filters.ChatType.GROUPS))
-    app.add_handler(CommandHandler("unmute", unmute, filters=filters.ChatType.GROUPS))
-    app.add_handler(CommandHandler("info", info_command, filters=filters.ChatType.GROUPS))
-    app.add_handler(CommandHandler("stats", stats, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("broadcast", broadcast, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("list_users", list_users, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("user_info", user_info, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("maintenance", maintenance_command, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("admin_panel", admin_panel, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("export_users", export_users, filters=filters.ChatType.PRIVATE))  # новая команда
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.PRIVATE, forward_msg))
-    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, reply_to))
-    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.ChatType.GROUPS, edited_reply_to))
-
-    # Инициализируем event loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    # Устанавливаем вебхук (синхронно внутри asyncio)
-    loop.run_until_complete(setup_webhook())
-
-    # Запускаем Flask в отдельном потоке (основной сервер)
-    port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Запуск Flask на порту {port}...")
-    flask_app.run(host='0.0.0.0', port=port, debug=False)
-
-def shutdown_handler(signum, frame):
-    logger.info("Получен сигнал завершения, останавливаем бота...")
-    if loop and app:
-        # Удаляем вебхук при остановке (опционально)
-        async def shutdown_webhook():
-            await app.bot.delete_webhook()
-        try:
-            loop.run_until_complete(shutdown_webhook())
-        except:
-            pass
-    sys.exit(0)
-
-if __name__ == "__main__":
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
-    run()
+# Инициализируем Telegram-бота при загрузке модуля
+init_telegram()
