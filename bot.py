@@ -36,9 +36,7 @@ ALLOWED_GROUPS = {ADMIN_GROUP_ID, SUPPORT_GROUP_ID, ADMIN_APPLICATION_GROUP_ID}
 OWNER_ID = 8098729751
 
 # ==================== ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ====================
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise Exception("DATABASE_URL не задан в переменных окружения")
+DATABASE_URL = "postgresql://anocolos:Xw8-NVk-4Cd-xru@postgresql-anocolos.alwaysdata.net/anocolos_mybot_db"
 
 db_pool = pool.SimpleConnectionPool(1, 20, DATABASE_URL, sslmode='require')
 
